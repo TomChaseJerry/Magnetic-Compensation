@@ -9,7 +9,7 @@ if __name__ == '__main__':
     # flights_20 = ["Flt1002", "Flt1003", "Flt1004", "Flt1005", "Flt1006", "Flt1007"]
     # flights_21 = ["Flt2001", "Flt2002", "Flt2004", "Flt2005", "Flt2006", "Flt2007", "Flt2008", "Flt2015", "Flt2016", "Flt2017"]
     # flights_all = flights_20 + flights_21
-    flights_all = ["Flt1002", "Flt1004"]
+    flights_all = ["Flt1002", "Flt1003", "Flt1004", "Flt1005", "Flt1006", "Flt1007"]
     test_lines = {"Flt1002": 1002.08, "Flt1003": 1003.01, "Flt1004": 4016.0, "Flt1005": 4002.0, "Flt1006": 1006.08,
                   "Flt1007": 1007.07,
                   "Flt2001": 2001.00, "Flt2002": 2002.02, "Flt2004": 2001.11, "Flt2005": 2004.00, "Flt2006": 2004.07,
@@ -76,6 +76,7 @@ if __name__ == '__main__':
                 t.set_postfix(loss=sum_loss / (i + 1), lr=scheduler.get_last_lr()[0])
                 t.update(1)
             scheduler.step()
+            t.close()
         if epoch % 5 == 0:
             model.eval()
             val_y = []
@@ -87,7 +88,7 @@ if __name__ == '__main__':
                     y_hat = model(x)
                     val_y.extend(np.array(y.cpu()))
                     val_y_hat.extend(np.array(y_hat.cpu()))
-            print("{}'s MagError:{}".format(model_type, np.round(compute_std_delta_mag(np.array(val_y), np.array(val_y_hat)), 2)))
+            print("{}'s MagError in training:{}".format(model_type, np.round(compute_std_delta_mag(np.array(val_y), np.array(val_y_hat)), 2)))
 
     print("=" * 50)
     print("Start testing...\n")
@@ -101,4 +102,4 @@ if __name__ == '__main__':
             y_hat = model(x)
             val_y.extend(np.array(y.cpu()))
             val_y_hat.extend(np.array(y_hat.cpu()))
-    print("{}'s MagError:{}".format(model_type, np.round(compute_std_delta_mag(np.array(val_y), np.array(val_y_hat)), 2)))
+    print("{}'s MagError in testing:{}".format(model_type, np.round(compute_std_delta_mag(np.array(val_y), np.array(val_y_hat)), 2)))
