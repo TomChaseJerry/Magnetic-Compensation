@@ -2,10 +2,9 @@ import pandas as pd
 import h5py
 from TL_model import fdm
 from Math import *
-from utils import *
 
 
-def read_check(xyz, field, N=1, silent=False):
+def read_check(xyz, field, N, silent=False):
     """
         Internal helper function to check for NaNs or missing data (returned as NaNs) in opened HDF5 file.
     Prints out warning for any field that contains NaNs.
@@ -69,9 +68,10 @@ def xyz_fields(flight):
 
     # Load CSV files containing field definitions
     fields20 = "./datasets/fields_sgl_2020.csv"
+    fields21 = "./datasets/fields_sgl_2021.csv"
     d = {
         "fields20": pd.read_csv(fields20, header=None).squeeze("columns").astype(str).tolist(),
-        "fields21": [],
+        "fields21": pd.read_csv(fields21, header=None).squeeze("columns").astype(str).tolist(),
         "fields160": []
     }
 
@@ -194,10 +194,7 @@ def get_XYZ20(xyz_h5, flight, info=None, tt_sort=True, silent=False):
         print(f"Reading in XYZ20 data: {xyz_h5}")
 
     with h5py.File(xyz_h5, 'r') as xyz:
-        N = 0
-        for k in xyz.keys():
-            if isinstance(xyz[k], list):
-                N = max(len(xyz[k]), N)
+        N = len(xyz['tt'])
         d = {}
         ind = np.argsort(read_check(xyz, 'tt', N, silent)) if tt_sort else np.arange(N)
 
@@ -231,8 +228,7 @@ def get_XYZ20(xyz_h5, flight, info=None, tt_sort=True, silent=False):
 
         # Cnb direction cosine matrix (body to navigation) from roll, pitch, yaw
         d['Cnb'] = np.zeros((3, 3, N))  # unknown
-        d['ins_Cnb'] = np.array([euler2dcm(d['ins_roll'][i], d['ins_pitch'][i], d['ins_yaw'][i])
-                                 for i in range(N)])
+        d['ins_Cnb'] = euler2dcm(d['ins_roll'], d['ins_pitch'], d['ins_yaw'])
         d['ins_P'] = np.zeros((1, 1, N))  # unknown
 
         # INS velocities in NED direction
@@ -242,7 +238,7 @@ def get_XYZ20(xyz_h5, flight, info=None, tt_sort=True, silent=False):
         # INS specific forces from measurements, rotated wander angle (CW for NED)
         ins_f = np.zeros((N, 3))
         for i in range(N):
-            ins_f[i, :] = euler2dcm(0, 0, -d['ins_wander'][i]) @ \
+            ins_f[i, :] = euler2dcm([0], [0], -d['ins_wander'][i]) @ \
                           np.array([d['ins_acc_x'][i], -d['ins_acc_y'][i], -d['ins_acc_z'][i]])
 
         d['ins_fn'], d['ins_fe'], d['ins_fd'] = ins_f[:, 0], ins_f[:, 1], ins_f[:, 2]
@@ -255,8 +251,85 @@ def get_XYZ20(xyz_h5, flight, info=None, tt_sort=True, silent=False):
         return d
 
 
-def get_XYZ21(xyz_160_h5, xyz_h5, info=None, silent=False):
-    pass
+def get_XYZ21(xyz_h5, flight, info=None, tt_sort=True, silent=False):
+    """
+        get_XYZ21(xyz_h5::String;
+                  info::String  = splitpath(xyz_h5)[end],
+                  tt_sort::Bool = true,
+                  silent::Bool  = false)
+
+    Get `XYZ21` flight data from saved HDF5 file. Based on 2021 SGL data fields.
+
+    **Arguments:**
+    - `xyz_h5`:  path/name of flight data HDF5 file (`.h5` extension optional)
+    - `info`:    (optional) flight data information
+    - `tt_sort`: (optional) if true, sort data by time (instead of line)
+    - `silent`:  (optional) if true, no print outs
+
+    **Returns:**
+    - `xyz`: `XYZ21` flight data struct
+    """
+    info = info or xyz_h5.split("/")[-1]
+
+    fields = flight
+
+    if not silent:
+        print(f"Reading in XYZ21 data: {xyz_h5}")
+
+    with h5py.File(xyz_h5, 'r') as xyz:
+        N = len(xyz['tt'])
+        d = {}
+        ind = np.argsort(read_check(xyz, 'tt', N, silent)) if tt_sort else np.arange(N)
+        for field in xyz_fields(fields):
+            if field != 'ignore':
+                d[field] = read_check(xyz, field, N, silent)[ind]
+
+        d['info'] = info
+        d['N'] = N
+
+        for field in ['aux_1', 'aux_2', 'aux_3']:
+            d[field] = read_check(xyz, field, N, True)
+
+        dt = np.round(d['tt'][1] - d['tt'][0], 9) if N > 1 else 0.1
+
+        # using [rad] exclusively
+        for field in ['lat', 'lon', 'ins_roll', 'ins_pitch', 'ins_yaw']:
+            d[field] = deg2rad(d.get(field, np.zeros(N)))
+
+        # provided IGRF for convenience
+        d['igrf'] = d.get('mag_1_dc', np.zeros(N)) - d.get('mag_1_igrf', np.zeros(N))
+
+        # trajectory velocities & specific forces from position
+        d['vn'] = fdm(d.get('utm_y', np.zeros(N))) / dt
+        d['ve'] = fdm(d.get('utm_x', np.zeros(N))) / dt
+        d['vd'] = -fdm(d.get('utm_z', np.zeros(N))) / dt
+        d['fn'] = fdm(d['vn']) / dt
+        d['fe'] = fdm(d['ve']) / dt
+        d['fd'] = fdm(d['vd']) / dt - 9.81  # Assuming g_earth = 9.81
+
+        # Cnb direction cosine matrix (body to navigation) from roll, pitch, yaw
+        d['Cnb'] = np.zeros((3, 3, N))  # unknown
+        d['ins_Cnb'] = euler2dcm(d['ins_roll'], d['ins_pitch'], d['ins_yaw'])
+        d['ins_P'] = np.zeros((1, 1, N))  # unknown
+
+        # INS velocities in NED direction
+        d['ins_ve'] = -d.get('ins_vw', np.zeros(N))
+        d['ins_vd'] = -d.get('ins_vu', np.zeros(N))
+
+        # INS specific forces from measurements, rotated wander angle (CW for NED)
+        ins_f = np.zeros((N, 3))
+        for i in range(N):
+            ins_f[i, :] = euler2dcm([0], [0], -d['ins_wander'][i]) @ \
+                          np.array([d['ins_acc_x'][i], -d['ins_acc_y'][i], -d['ins_acc_z'][i]])
+
+        d['ins_fn'], d['ins_fe'], d['ins_fd'] = ins_f[:, 0], ins_f[:, 1], ins_f[:, 2]
+
+        # INS specific forces from finite differences
+        # push!(d,:ins_fn => fdm(-d[:ins_vn]) / dt)
+        # push!(d,:ins_fe => fdm(-d[:ins_ve]) / dt)
+        # push!(d,:ins_fd => fdm(-d[:ins_vd]) / dt .- g_earth)
+
+        return d
 
 
 def xyz_reorient_vec(xyz):
@@ -293,7 +366,7 @@ def get_XYZ(flight, df_flight, tt_sort=True, reorient_vec=False, silent=False):
     if xyz_type == "XYZ20":
         xyz = get_XYZ20(xyz_file, silent=silent, flight=flight)
     elif xyz_type == "XYZ21":
-        xyz = get_XYZ21(xyz_file, silent=silent)
+        xyz = get_XYZ21(xyz_file, silent=silent, flight=flight)
     else:
         raise ValueError("{} xyz_type not defined".format(xyz_type))
 
@@ -301,12 +374,13 @@ def get_XYZ(flight, df_flight, tt_sort=True, reorient_vec=False, silent=False):
     if reorient_vec:
         xyz_reorient_vec(xyz)
 
+    print(xyz['info'], xyz.keys())
     return xyz
 
-
-if __name__ == '__main__':
-    flight = "Flt1006"
-    df_flight_path = "datasets/dataframes/df_flight.csv"
-    df_flight = pd.read_csv(df_flight_path)
-    xyz = get_XYZ(flight, df_flight)
-    print(xyz.keys())
+# if __name__ == '__main__':
+#     flight = "Flt2017"
+#     df_flight_path = "datasets/dataframes/df_flight.csv"
+#     df_flight = pd.read_csv(df_flight_path)
+#     xyz = get_XYZ(flight, df_flight)
+#     print(xyz.keys())
+#     print(xyz['tt'].shape)

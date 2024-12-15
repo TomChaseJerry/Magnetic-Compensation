@@ -1,5 +1,5 @@
-from utils import *
-from get_XYZ import *
+import numpy as np
+from utils import get_bpf, bpf_data
 
 
 def fdm(x, scheme='central'):
@@ -191,104 +191,44 @@ def create_TL_coef(Bx, By, Bz, Bt, B, lambd=0.0, terms=("permanent", "induced", 
     else:
         return coef
 
-
-# def get_TL_term_ind(term, terms):
-#     """
-#     get_TL_term_ind(term::Symbol, terms)
+# if __name__ == '__main__':
+# flight = "Flt1006"
+# df_flight_path = "datasets/dataframes/df_flight.csv"
+# df_flight = pd.read_csv(df_flight_path)
+# xyz = get_XYZ(flight, df_flight)
+# print(xyz.keys())
 #
-#     Internal helper function to find indices that correspond to `term` in TL_coef
-#     that are created using `terms`.
+# map_name = "Eastern_395"  # select map, full list in df_map
+# df_options = [55770.0, 56609.0]
+# line = "1006.08"  # select flight line (row) from df_options
+# ind = get_ind(xyz, tt_lim=[df_options[0], df_options[1]])  # get Boolean indices
+# print("ind:{}-{}".format(df_options[0], df_options[1]))
 #
-#     **Arguments:**
-#     - `term`:  Tolles-Lawson term  {`:permanent`,`:induced`,`:eddy`,`:bias`}
-#     - `terms`: Tolles-Lawson terms {`:permanent`,`:induced`,`:eddy`,`:bias`}
+# TL_i = 5  # 1006.04
+# df_cal_path = "datasets/dataframes/df_cal.csv"
+# df_cal = pd.read_csv(df_cal_path)
+# TL_ind = get_ind(xyz, tt_lim=[df_cal['t_start'][TL_i], df_cal['t_end'][TL_i]])
+# print("TL_ind:{}-{}".format(df_cal['t_start'][TL_i], df_cal['t_end'][TL_i]))
 #
-#     **Returns:**
-#     - `ind`: BitVector of indices corresponding to `term` in TL_coef with `terms`
-#     """
-#     # Ensure terms is a list
-#     if isinstance(terms, tuple):
-#         terms = list(terms)
-#     elif not isinstance(terms, list):
-#         terms = [terms]
-#
-#     assert term in terms, f"Term '{term}' not in terms"
-#
-#     # Placeholder input vector
-#     x = np.array([1.0])
-#
-#     # Get number of coefficients for the current term and all terms
-#     N_term = len(create_TL_A(x, x, x, terms=[term]))
-#     N_terms = len(create_TL_A(x, x, x, terms=terms))
-#
-#     # Find the index of the term
-#     i_term = terms.index(term)
-#
-#     # Calculate indices
-#     prior_terms_length = sum(len(create_TL_A(x, x, x, terms=terms[:i])) for i in range(i_term))
-#     ind_ = np.arange(prior_terms_length, prior_terms_length + N_term)
-#
-#     # Create a Boolean array for the indices
-#     ind = np.zeros(N_terms, dtype=bool)
-#     ind[ind_] = True
-#
-#     return ind
-#
-#
-# def normalized_mag(arr):
-#     """
-#     Normalize a 1D NumPy array to the range [0, 1].
-#
-#     Parameters:
-#     - arr (numpy.ndarray): Input 1D array.
-#
-#     Returns:
-#     - numpy.ndarray: Normalized array in the range [0, 1].
-#     """
-#     arr_min = np.min(arr)
-#     arr_max = np.max(arr)
-#     if arr_max == arr_min:
-#         raise ValueError("Normalization is not possible: all elements in the array are the same.")
-#     normalized = (arr - arr_min) / (arr_max - arr_min)
-#     return normalized
-
-if __name__ == '__main__':
-    flight = "Flt1006"
-    df_flight_path = "datasets/dataframes/df_flight.csv"
-    df_flight = pd.read_csv(df_flight_path)
-    xyz = get_XYZ(flight, df_flight)
-    print(xyz.keys())
-
-    map_name = "Eastern_395"  # select map, full list in df_map
-    df_options = [55770.0, 56609.0]
-    line = "1006.08"  # select flight line (row) from df_options
-    ind = get_ind(xyz, tt_lim=[df_options[0], df_options[1]])  # get Boolean indices
-    print("ind:{}-{}".format(df_options[0], df_options[1]))
-
-    TL_i = 5
-    df_cal_path = "datasets/dataframes/df_cal.csv"
-    df_cal = pd.read_csv(df_cal_path)
-    TL_ind = get_ind(xyz, tt_lim=[df_cal['t_start'][TL_i], df_cal['t_end'][TL_i]])
-    print("TL_ind:{}-{}".format(df_cal['t_start'][TL_i], df_cal['t_end'][TL_i]))
-
-    lambd = 0.025  # ridge parameter for ridge regression
-    use_vec = "flux_d"  # selected vector (flux) magnetometer
-    use_sca = "mag_4_uc"
-    terms_A = ["permanent", "induced", "eddy"]  # Tolles-Lawson terms to use
-    Bx = xyz.get(use_vec + '_x')  # load Flux D data
-    By = xyz.get(use_vec + '_y')
-    Bz = xyz.get(use_vec + '_z')
-    Bt = xyz.get(use_vec + '_t')
-    TL_d_4 = create_TL_coef(Bx[TL_ind], By[TL_ind], Bz[TL_ind], Bt[TL_ind], xyz.get(use_sca)[TL_ind], lambd=lambd,
-                            terms=terms_A)  # coefficients with Flux D & Mag 4
-    # print(TL_d_4)
-    A = create_TL_A(Bx[ind], By[ind], Bz[ind], Bt=Bt[ind])  # Tolles-Lawson `A` matrix for Flux D
-    mag_1_sgl = xyz['mag_1_c'][ind]  # professionally compensated tail stinger, Mag 1
-    mag_4_uc = xyz['mag_4_uc'][ind]  # uncompensated Mag 4
-    mag_4_c = mag_4_uc - detrend(np.dot(A, TL_d_4), type='linear')  # compensated Mag 4
-    print("mag error:{}nT".format(calculate_error(mag_4_c, mag_1_sgl)))
-    tt = (xyz['tt'][ind] - xyz['tt'][ind][1]) / 60
-    plot(tt, mag_1_sgl, detrend_data=True, detrend_type="linear")
-    plot(tt, mag_4_uc, detrend_data=True, detrend_type="linear")
-    plot(tt, mag_4_c, detrend_data=True, detrend_type="linear")
-    plt.show()
+# lambd = 0.025  # ridge parameter for ridge regression
+# use_vec = "flux_d"  # selected vector (flux) magnetometer
+# use_sca = "mag_4_uc"
+# terms_A = ["permanent", "induced", "eddy"]  # Tolles-Lawson terms to use
+# Bx = xyz.get(use_vec + '_x')  # load Flux D data
+# By = xyz.get(use_vec + '_y')
+# Bz = xyz.get(use_vec + '_z')
+# Bt = xyz.get(use_vec + '_t')
+# TL_d_4 = create_TL_coef(Bx[TL_ind], By[TL_ind], Bz[TL_ind], Bt[TL_ind], xyz.get(use_sca)[TL_ind], lambd=lambd,
+#                         terms=terms_A)  # coefficients with Flux D & Mag 4
+# print(TL_d_4.shape)
+# A = create_TL_A(Bx[ind], By[ind], Bz[ind], Bt=Bt[ind])  # Tolles-Lawson `A` matrix for Flux D
+# print(A.shape)
+# mag_1_sgl = xyz['mag_1_c'][ind]  # professionally compensated tail stinger, Mag 1
+# mag_4_uc = xyz['mag_4_uc'][ind]  # uncompensated Mag 4
+# mag_4_c = mag_4_uc - detrend(np.dot(A, TL_d_4), type='linear')  # compensated Mag 4
+# print("mag error:{}nT".format(calculate_error(mag_4_c, mag_1_sgl)))
+# tt = (xyz['tt'][ind] - xyz['tt'][ind][1]) / 60
+# plot(tt, mag_1_sgl, detrend_data=True, detrend_type="linear")
+# plot(tt, mag_4_uc, detrend_data=True, detrend_type="linear")
+# plot(tt, mag_4_c, detrend_data=True, detrend_type="linear")
+# plt.show()
