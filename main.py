@@ -5,6 +5,9 @@ from model import *
 from utils import compute_std_delta_mag
 from torch.utils.data.dataset import random_split
 
+import os
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+
 if __name__ == '__main__':
     # flights_20 = ["Flt1002", "Flt1003", "Flt1004", "Flt1005", "Flt1006", "Flt1007"]
     # flights_21 = ["Flt2001", "Flt2002", "Flt2004", "Flt2005", "Flt2006", "Flt2007", "Flt2008", "Flt2015", "Flt2016", "Flt2017"]
@@ -31,18 +34,19 @@ if __name__ == '__main__':
         test_inds[flight] = test_ind
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    batch_size = 32
-    lr = 0.01
-    epochs = 2
+    batch_size = 64
+    lr = 0.1
+    epochs = 50
 
     train_features = ['cur_ac_hi', 'cur_strb', 'cur_heat', 'vol_bat_1', 'vol_block', 'cur_com_1', 'cur_ac_lo', 'cur_tank',
                       'cur_flap', 'vol_bat_2', 'mag_2_uc', 'mag_3_uc', 'mag_4_uc', 'mag_5_uc', 'flux_d_x', 'flux_d_y', 'flux_d_z']
 
     lpf = get_bpf(pass1=0.0, pass2=0.2, fs=10.0)
     custom_dataset = MagCompDataset(xyzs, test_inds, train_features, lpf, 'train')
+    mse_scaling_factor = custom_dataset.get_y_max()
     train_size = int(custom_dataset.__len__() * 14 / 17)
-    val_size = len(custom_dataset) - train_size
-    dataset_train, dataset_val = torch.utils.data.random_split(custom_dataset, [train_size, val_size])
+    val_size = custom_dataset.__len__() - train_size
+    dataset_train, dataset_val = random_split(custom_dataset, [train_size, val_size])
     dataset_test = MagCompDataset(xyzs, test_inds, train_features, lpf, 'test')
     print("train num:", train_size)
     print("val num:", val_size)
@@ -54,21 +58,20 @@ if __name__ == '__main__':
     model_type = 'Model1'
     print("input dim:", len(train_features))
     model = Model1(len(train_features)).to(device)
-    criterion = nn.MSELoss().to(device)
     optimizer = optim.Adam(model.parameters(), lr=lr)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=200)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=50)
 
     print("=" * 50)
     print("Start training and validation...\n")
-    sum_loss = 0.0
     model.train()
     for epoch in range(epochs):
+        sum_loss = 0.0
         with tqdm(total=len(dataloader_train), desc='epoch{} [train]'.format(epoch + 1), file=sys.stdout) as t:
             for i, data in enumerate(dataloader_train):
                 x, y = data
                 x, y = x.to(device), y.to(device)
                 y_hat = model(x).reshape(-1)
-                loss = criterion(y_hat, y)
+                loss = scaled_mse_loss(y_hat, y, mse_scaling_factor)
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
@@ -76,7 +79,7 @@ if __name__ == '__main__':
                 t.set_postfix(loss=sum_loss / (i + 1), lr=scheduler.get_last_lr()[0])
                 t.update(1)
             scheduler.step()
-            t.close()
+
         if epoch % 5 == 0:
             model.eval()
             val_y = []
@@ -88,7 +91,8 @@ if __name__ == '__main__':
                     y_hat = model(x)
                     val_y.extend(np.array(y.cpu()))
                     val_y_hat.extend(np.array(y_hat.cpu()))
-            print("{}'s MagError in training:{}".format(model_type, np.round(compute_std_delta_mag(np.array(val_y), np.array(val_y_hat)), 2)))
+            print("{}'s MagError in validation:{}".format(model_type,
+                                                          compute_std_delta_mag(np.array(val_y), np.array(val_y_hat))))
 
     print("=" * 50)
     print("Start testing...\n")
@@ -102,4 +106,5 @@ if __name__ == '__main__':
             y_hat = model(x)
             val_y.extend(np.array(y.cpu()))
             val_y_hat.extend(np.array(y_hat.cpu()))
-    print("{}'s MagError in testing:{}".format(model_type, np.round(compute_std_delta_mag(np.array(val_y), np.array(val_y_hat)), 2)))
+    print("{}'s MagError in testing:{}".format(model_type,
+                                               compute_std_delta_mag(np.array(val_y), np.array(val_y_hat))))

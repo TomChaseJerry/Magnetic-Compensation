@@ -294,6 +294,7 @@ def compute_std_delta_mag(mag_output, mag_1_c):  # Standard deviation of magneti
     errors = mag_output - mag_1_c
     mu_delta_mag = np.mean(errors)
     sigma_delta_mag = np.sqrt(np.mean((errors - mu_delta_mag) ** 2))
+    sigma_delta_mag = round(sigma_delta_mag, 2)
     return sigma_delta_mag
 
 
