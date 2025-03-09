@@ -261,13 +261,40 @@ def plot_mag(
 
 
 def plot(tt, mag, detrend_data=False, detrend_type="linear"):
+    start_time = tt[0]
+    end_time = tt[1]
+    timestamps = np.linspace(0, 1, len(mag))
+    time_series = [start_time + (end_time - start_time) * t for t in timestamps]
+
     plt.figure()
-    plt.xlabel("time [min]")
+    plt.xlabel("time")
     plt.ylabel("magnetic field [nT]")
     if detrend_data:
         mag = detrend(mag, type=detrend_type)
-    plt.plot(tt, mag)
-    # plt.show()
+    plt.plot(time_series, mag)
+    plt.show()
+
+
+def plot_model_vs_real(time_range, model_output, real_values, model_type):
+    assert model_output.shape == real_values.shape, "模型输出和真实值的维度必须相同"
+
+    start_time = time_range[0]
+    end_time = time_range[1]
+    timestamps = np.linspace(0, 1, len(model_output))
+    time_series = [start_time + (end_time - start_time) * t for t in timestamps]
+
+    plt.figure(figsize=(10, 5))
+    plt.plot(time_series, model_output, label='Model Output', color='blue')
+    plt.plot(time_series, real_values, label='Real Values', color='red')
+    plt.xticks(rotation=45)
+    plt.xlabel('Time')
+    plt.ylabel('Value')
+    plt.title('Model Output vs Real Values')
+    plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.tight_layout()
+    plt.savefig("./results/{}.png".format(model_type))
+    plt.show()
 
 
 def min_max_normalize(array):
@@ -282,6 +309,10 @@ def z_score_normalize(array):
     std = np.std(array)
     normalized = (array - mean) / std
     return normalized
+
+
+def inverse_transform(scaled_data, scaler):
+    return scaled_data * scaler.scale_ + scaler.mean_
 
 
 def calculate_error(mag_comp, mag_true, detrend_type="linear"):
@@ -305,34 +336,3 @@ def compute_improvement_ratio(sigma_uc, sigma_c):  # Improvement Ratio
 
 def compute_snr(sigma_magtruth, sigma_delta_mag):  # SNR, Signal-to-Noise Ratio
     return sigma_magtruth / sigma_delta_mag
-
-# if __name__ == '__main__':
-# flight = "Flt1006"
-# df_flight_path = "datasets/dataframes/df_flight.csv"
-# df_flight = pd.read_csv(df_flight_path)
-# xyz = get_XYZ(flight, df_flight)
-# print(xyz.keys())
-#
-# map_name = "Eastern_395"  # select map, full list in df_map
-# df_options = [55770.0, 56609.0]
-# line = "1006.08"  # select flight line (row) from df_options
-# ind = get_ind(xyz, tt_lim=[df_options[0], df_options[1]])  # get Boolean indices
-# print("ind:{}-{}".format(df_options[0], df_options[1]))
-#
-# TL_i = 5
-# df_cal_path = "datasets/dataframes/df_cal.csv"
-# df_cal = pd.read_csv(df_cal_path)
-# TL_ind = get_ind(xyz, tt_lim=[df_cal['t_start'][TL_i], df_cal['t_end'][TL_i]])
-# print("TL_ind:{}-{}".format(df_cal['t_start'][TL_i], df_cal['t_end'][TL_i]))
-#
-# p1 = plot_mag(xyz, ind=ind, use_mags=['mag_1_uc', 'mag_4_uc', 'mag_5_uc'], detrend_data=True)
-# p2 = plot_mag(xyz, ind=ind, use_mags=['flux_d'], detrend_data=True, vec_terms=True)
-# p2.show()
-#
-# lpf = get_bpf(pass1=0.0, pass2=0.2, fs=10.0)
-# lpf_sig = -bpf_data(xyz['cur_strb'][TL_ind], bpf=lpf)  # apply low-pass filter, sign switched for easier comparison
-# plt.figure()
-# plt.plot(xyz['tt'][TL_ind], xyz['cur_strb'][TL_ind])
-# plt.figure()
-# plt.plot(xyz['tt'][TL_ind], lpf_sig)
-# plt.show()
