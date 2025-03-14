@@ -275,11 +275,10 @@ def plot(tt, mag, detrend_data=False, detrend_type="linear"):
     plt.show()
 
 
-def plot_model_vs_real(time_range, model_output, real_values, model_type):
+def plot_model_vs_real(time_range, model_output, real_values, model_type, mag_error, is_save=True):
     assert model_output.shape == real_values.shape, "模型输出和真实值的维度必须相同"
 
-    start_time = time_range[0]
-    end_time = time_range[1]
+    start_time, end_time = time_range
     timestamps = np.linspace(0, 1, len(model_output))
     time_series = [start_time + (end_time - start_time) * t for t in timestamps]
 
@@ -289,11 +288,12 @@ def plot_model_vs_real(time_range, model_output, real_values, model_type):
     plt.xticks(rotation=45)
     plt.xlabel('Time')
     plt.ylabel('Value')
-    plt.title('Model Output vs Real Values')
+    plt.title('MagError:{:.2f}nT'.format(mag_error))
     plt.legend()
     plt.grid(True, linestyle='--', alpha=0.6)
     plt.tight_layout()
-    plt.savefig("./results/{}.png".format(model_type))
+    if is_save:
+        plt.savefig("./results/{}.png".format(model_type))
     plt.show()
 
 

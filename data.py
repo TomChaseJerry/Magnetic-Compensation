@@ -15,6 +15,8 @@ class MagCompData:
     def __init__(self, config):
         self.config = config
 
+        self.selected_features = config.selected_features
+        self.lpf = get_bpf(pass1=0.0, pass2=0.2, fs=10.0)
         self.xyzs = {}
         self.train_inds = {}
         self.test_inds = {}
@@ -28,69 +30,63 @@ class MagCompData:
             print("test line in {}: {}\n".format(flight, test_line))
 
             # get Boolean indices
-            train_ind = np.ones(len(xyz['tt']), dtype=bool)
-            for train_tt in self.config.train_ttlim[flight]:
+            train_ind = np.zeros(len(xyz['tt']), dtype=bool)
+            for train_tt in self.config.train_ttlim.get(flight, []):
                 train_ind |= get_ind(xyz, tt_lim=train_tt)
-            test_ind = np.ones(len(xyz['tt']), dtype=bool)
-            for test_tt in self.config.test_ttlim[flight]:
+            test_ind = np.zeros(len(xyz['tt']), dtype=bool)
+            for test_tt in self.config.test_ttlim.get(flight, []):
                 test_ind |= get_ind(xyz, tt_lim=test_tt)
             self.train_inds[flight] = train_ind
             self.test_inds[flight] = test_ind
 
 
 class MagCompDataset(Dataset):
-    def __init__(self, xyzs, train_inds, test_inds, features, mode, lpf=get_bpf(pass1=0.0, pass2=0.2, fs=10.0), is_pca=False):
-        self.xyzs = xyzs
-        self.test_inds = test_inds
-        self.train_inds = train_inds
-        self.features = features
-        self.lpf = lpf
+    def __init__(self, data, mode):
+        self.xyzs = data.xyzs
+        self.test_inds = data.test_inds
+        self.train_inds = data.train_inds
+        self.features = data.selected_features
+        self.lpf = data.lpf
         self.mode = mode
-        self.is_pca = is_pca
+        self.config = data.config
+        self.is_pca = self.config.is_pca
+
 
         self.std_input = StandardScaler()
         self.std_output = StandardScaler()
         self.std_Btotal = StandardScaler()
         self.x = None
         self.y = None
+        self.mag4uc = None
+        self.mag1c = None
+        self.A = np.empty((0, 18))
+        self.beta_TL = np.zeros((18,))
         self.length = None
 
+        self.create_TL_params()
         self.data_processing()
-        if self.mode == 'train':
-            self.B_total = self.calculate_Btotal('Flt1003')
+
+        # if self.mode == 'train':
+        #     self.B_total = self.calculate_Btotal('Flt1003')
         if self.is_pca:
-            pca = PCA(n_components=0.995)
-            self.x = pca.fit_transform(self.x)
-
-    def __getitem__(self, idx):
-        if self.mode == 'train':
-            return self.x[idx], self.y[idx], self.B_total[idx]
-        else:
-            return self.x[idx], self.y[idx]
-
-    def __len__(self):
-        return self.length
+            pca = PCA(n_components=0.99)
+            self.x = torch.tensor(pca.fit_transform(self.x), dtype=torch.float32)
 
     def data_processing(self):
         arrays_x = [[] for _ in range(len(self.features))]
         arrays_y = []
+        arrays_mag4 = []
+        arrays_mag1 = []
         for flight, xyz in self.xyzs.items():
-            train_ind = self.train_inds[flight]
-            test_ind = self.test_inds[flight]
             if self.mode == 'train':
-                sub_diurnal = xyz['diurnal'][train_ind]
-                sub_igrf = xyz['igrf'][train_ind]
-                arrays_y.extend(xyz['mag_1_c'][train_ind] - sub_diurnal - sub_igrf)
+                ind = self.train_inds[flight]
             else:
-                sub_diurnal = xyz['diurnal'][test_ind]
-                sub_igrf = xyz['igrf'][test_ind]
-                arrays_y.extend(xyz['mag_1_c'][test_ind] - sub_diurnal - sub_igrf)
+                ind = self.test_inds[flight]
+            sub_diurnal = xyz['diurnal'][ind]
+            sub_igrf = xyz['igrf'][ind]
 
             for i, key in enumerate(self.features):
-                if self.mode == 'train':
-                    value = xyz[key][train_ind]
-                else:
-                    value = xyz[key][test_ind]
+                value = xyz[key][ind]
                 if key in ['mag_4_uc', 'mag_5_uc', 'flux_d_x', 'flux_d_y', 'flux_d_z']:
                     arrays_x[i].extend(value - sub_diurnal - sub_igrf)
                 elif key in ['cur_com_1', 'cur_strb', 'cur_outpwr', 'cur_ac_lo']:
@@ -99,10 +95,17 @@ class MagCompDataset(Dataset):
                 else:
                     arrays_x[i].extend(value)
 
+            arrays_y.extend(xyz['mag_4_uc'][ind] - xyz['mag_1_c'][ind])
+            arrays_mag4.extend(xyz['mag_4_uc'][ind])
+            arrays_mag1.extend(xyz['mag_1_c'][ind])
+
         for i in range(len(self.features)):
             arrays_x[i] = self.std_input.fit_transform(np.array(arrays_x[i]).reshape(-1, 1))
         arrays_x = np.array(arrays_x).reshape(-1, len(self.features))
-        arrays_y = np.array(self.std_output.fit_transform(np.array(arrays_y).reshape(-1, 1)))
+        arrays_y = np.array(arrays_y)
+        self.mag4uc = np.array(arrays_mag4)
+        self.mag1c = np.array(arrays_mag1)
+
         self.x = torch.tensor(arrays_x, dtype=torch.float32)
         self.y = torch.tensor(arrays_y, dtype=torch.float32)
         self.length = self.y.shape[0]
@@ -110,25 +113,44 @@ class MagCompDataset(Dataset):
     def get_std_output(self):
         return self.std_output
 
-    def calculate_Btotal(self, flight):
-        TL_ind = self.train_inds[flight]
-        ind = self.test_inds[flight]
-        lambd = 0.025  # ridge parameter for ridge regression
-        use_vec = "flux_d"  # selected vector (flux) magnetometer
-        use_sca = "mag_4_uc"
-        terms_A = ["permanent", "induced", "eddy"]  # Tolles-Lawson terms to use
-        xyz = self.xyzs[flight]
-        Bx = xyz.get(use_vec + '_x')  # load Flux D data
-        By = xyz.get(use_vec + '_y')
-        Bz = xyz.get(use_vec + '_z')
-        Bt = xyz.get(use_vec + '_t')
-        TL_d_4 = create_TL_coef(Bx[TL_ind], By[TL_ind], Bz[TL_ind], Bt[TL_ind], xyz.get(use_sca)[TL_ind], lambd=lambd,
-                                terms=terms_A)  # coefficients with Flux D & Mag 4
-        A = create_TL_A(Bx[ind], By[ind], Bz[ind], Bt=Bt[ind])  # Tolles-Lawson `A` matrix for Flux D
-        mag_4_uc = xyz['mag_4_uc'][ind]  # uncompensated Mag 4
-        mag_4_c = np.array(mag_4_uc - detrend(np.dot(A, TL_d_4), type='linear') - xyz['diurnal'][ind] - xyz['igrf'][ind])
-        mag_4_c = torch.tensor(self.std_Btotal.fit_transform(mag_4_c.reshape(-1, 1)), dtype=torch.float32)
-        return mag_4_c
+    def create_TL_params(self):
+        TL_d_4 = np.zeros((18,))
+        for flight, _ in self.config.train_ttlim.items():
+            TL_ind = self.train_inds[flight]
+            xyz = self.xyzs[flight]
+
+            use_vec = "flux_d"  # selected vector (flux) magnetometer
+            use_sca = "mag_4_uc"
+            lambd = 0.025  # ridge parameter for ridge regression
+            terms_A = ["permanent", "induced", "eddy"]  # Tolles-Lawson terms to use
+            Bx = xyz.get(use_vec + '_x')  # load Flux D data
+            By = xyz.get(use_vec + '_y')
+            Bz = xyz.get(use_vec + '_z')
+            Bt = xyz.get(use_vec + '_t')
+
+            TL_d_4 += create_TL_coef(Bx[TL_ind], By[TL_ind], Bz[TL_ind], Bt[TL_ind], xyz.get(use_sca)[TL_ind],
+                                     lambd=lambd, terms=terms_A)  # coefficients with Flux D & Mag 4
+        self.beta_TL = TL_d_4 / len(self.config.train_ttlim)
+
+        for flight, xyz in self.xyzs.items():
+            if self.mode == 'train':
+                ind = self.train_inds[flight]
+            else:
+                ind = self.test_inds[flight]
+
+            use_vec = "flux_d"  # selected vector (flux) magnetometer
+            Bx = xyz.get(use_vec + '_x')  # load Flux D data
+            By = xyz.get(use_vec + '_y')
+            Bz = xyz.get(use_vec + '_z')
+            Bt = xyz.get(use_vec + '_t')
+
+            self.A = np.vstack((self.A, create_TL_A(Bx[ind], By[ind], Bz[ind], Bt=Bt[ind])))  # Tolles-Lawson A matrix for Flux D
+
+    def __getitem__(self, idx):
+        return self.x[idx], self.y[idx], self.A[idx]
+
+    def __len__(self):
+        return self.length
 
 
 def read_check(xyz, field, N, silent=False):

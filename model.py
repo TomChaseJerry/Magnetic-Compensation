@@ -19,8 +19,8 @@ class PINN_TLNET(nn.Module):
         super(PINN_TLNET, self).__init__()
         self.fc1 = nn.Linear(input_dim, 32)
         self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(32, 8)
-        self.fc3 = nn.Linear(8, 1)
+        self.fc2 = nn.Linear(32, 32)
+        self.fc3 = nn.Linear(32, 18)
 
     def forward(self, x):
         x = self.fc1(x)
@@ -29,3 +29,4 @@ class PINN_TLNET(nn.Module):
         x = self.relu(x)
         x = self.fc3(x)
         return x
+
