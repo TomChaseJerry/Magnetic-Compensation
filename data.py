@@ -51,7 +51,6 @@ class MagCompDataset(Dataset):
         self.config = data.config
         self.is_pca = self.config.is_pca
 
-
         self.std_input = StandardScaler()
         self.std_output = StandardScaler()
         self.std_Btotal = StandardScaler()
@@ -147,7 +146,7 @@ class MagCompDataset(Dataset):
             self.A = np.vstack((self.A, create_TL_A(Bx[ind], By[ind], Bz[ind], Bt=Bt[ind])))  # Tolles-Lawson A matrix for Flux D
 
     def __getitem__(self, idx):
-        return self.x[idx], self.y[idx], self.A[idx]
+        return self.x[idx], self.y[idx], self.A[idx], self.mag4uc[idx], self.mag1c[idx]
 
     def __len__(self):
         return self.length

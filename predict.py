@@ -44,7 +44,7 @@ def TL_model_predict(flight, test_interval, is_save=True):
                            magerror, is_save)
 
 
-def Model_predict(config, flight, model_path, model_type, is_save=True):
+def TLNET_predict(config, flight, model_path, model_type, is_save=True):
     print("=" * 50)
     print("Start testing...\n")
 
@@ -60,30 +60,33 @@ def Model_predict(config, flight, model_path, model_type, is_save=True):
 
     model = torch.load(model_path, weights_only=False)
     model.eval()
-    val_y = []
-    val_y_hat = []
+    B_preds = []
+    B_reals = []
     with torch.no_grad():
         beta_TL = torch.tensor(custom_dataset.beta_TL, dtype=torch.float32, device=device)
         for data in dataloader_test:
-            x, y, A = data
-            x, y, A = x.to(device), y.to(device), torch.tensor(A, dtype=torch.float32).to(device)
+            x, y, A, mag4, mag1 = data
+            x, y, A, mag4, mag1 = x.to(device), y.to(device), torch.tensor(A, dtype=torch.float32).to(device), torch.tensor(mag4,
+                                                                                                                            dtype=torch.float32).to(
+                device), torch.tensor(mag1, dtype=torch.float32).to(device)
             c = model(x)
-            val_y.extend(y.cpu())
-            val_y_hat.extend(torch.diag(torch.matmul(A, (beta_TL + c).T)).cpu())
+            B_pred = mag4 - torch.diag(torch.matmul(A, (beta_TL + c).T))
+            B_real = mag1
+            B_preds.extend(B_pred.cpu())
+            B_reals.extend(B_real.cpu())
 
-    val_y = np.array(val_y)
-    val_y_hat = np.array(val_y_hat)
-    magerror = compute_std_delta_mag(val_y, val_y_hat)
-    B_pred = dataset_test.mag4uc - val_y_hat
-    B_real = dataset_test.mag1c
-    plot_model_vs_real([0, 10000], B_pred, B_real, model_type, magerror, is_save)
+    B_preds = np.array(B_preds)
+    B_reals = np.array(B_reals)
+    magerror = compute_std_delta_mag(B_preds, B_reals)
+    plot_model_vs_real([0, 10000], B_preds, B_reals, model_type, magerror, is_save)
     print("{}'s MagError in testing:{}nT".format(model_type, magerror))
 
 
 if __name__ == '__main__':
     config = config()
     train_flight = "Flt1003"
-    test_flight = "Flt1003"
+    test_flight = "Flt1004"
     # TL_model_predict([train_flight, test_flight], config.test_ttlim[test_flight])
-    model_path = "results/TLNET.pt"
-    Model_predict(config, [train_flight, test_flight], model_path, 'TLNET_{}_{}'.format(test_flight, config.test_ttlim[test_flight][0]))
+    model_path = "results/PINN_TLNET.pt"
+    TLNET_predict(config, [train_flight, test_flight], model_path,
+                  'PINN_TLNET_{}_{}'.format(test_flight, config.test_ttlim[test_flight][0]))

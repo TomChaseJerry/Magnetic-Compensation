@@ -33,8 +33,8 @@ if __name__ == '__main__':
     device = config.device
     model = PINN_TLNET(custom_dataset.x.shape[1]).to(device)
     optimizer = optim.Adam(model.parameters(), lr=config.lr)
-    # loss_function = MagneticCompensationLoss()
-    loss_function = torch.nn.MSELoss()
+    loss_function = MagneticCompensationLoss()
+    # loss_function = torch.nn.MSELoss()
     print("=" * 50)
     print("{} : Start training and validation...\n".format(model_type))
     minerror = np.inf
@@ -43,10 +43,16 @@ if __name__ == '__main__':
         model.train()
         sum_loss = 0.0
         for i, data in enumerate(dataloader_train):
-            x, y, A = data
-            x, y, A = x.to(device), y.to(device), torch.tensor(A, dtype=torch.float32).to(device)
+            x, y, A, mag4, mag1 = data
+            x, y, A, mag4, mag1 = x.to(device), y.to(device), torch.tensor(A, dtype=torch.float32).to(device), torch.tensor(mag4,
+                                                                                                                            dtype=torch.float32).to(
+                device), torch.tensor(mag1, dtype=torch.float32).to(device)
             c = model(x)
-            loss = loss_function(y, torch.diag(torch.matmul(A, (beta_TL + c).T)))
+            # loss = loss_function(y, torch.diag(torch.matmul(A, (beta_TL + c).T)))
+            B_pred = mag4 - torch.diag(torch.matmul(A, (beta_TL + c).T))
+            B_real = mag1
+            B_tl = mag4 - torch.diag(torch.matmul(A, beta_TL.T))
+            loss = loss_function(B_pred, B_real, B_tl)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -59,7 +65,7 @@ if __name__ == '__main__':
             val_y_hat = []
             with torch.no_grad():
                 for data in dataloader_val:
-                    x, y, A = data
+                    x, y, A, _, _ = data
                     x, y, A = x.to(device), y.to(device), torch.tensor(A, dtype=torch.float32).to(device)
                     c = model(x)
                     val_y.extend(y.cpu())

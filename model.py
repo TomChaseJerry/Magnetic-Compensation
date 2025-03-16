@@ -7,9 +7,9 @@ class MagneticCompensationLoss(nn.Module):
         self.mse_loss = nn.MSELoss()
         self.lambda_phy = lambda_phy
 
-    def forward(self, B_pred, B_real, B_total):
+    def forward(self, B_pred, B_real, B_tl):
         L_data = self.mse_loss(B_pred, B_real)
-        L_physics = self.mse_loss(B_pred, B_total)
+        L_physics = self.mse_loss(B_pred, B_tl)
         L_total = L_data + self.lambda_phy * L_physics
         return L_total
 

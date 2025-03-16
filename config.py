@@ -18,7 +18,7 @@ class config(object):
     train_ttlim = {"Flt1003": [[50713.00, 54497.00]]}
     # test_ttlim = {"Flt1002": [[46370.00, 47600.00]], "Flt1003": [[54639.00, 59475.00], [60243.00, 64586.00]],
     #               "Flt1004": [[52256.06, 52862.14]]}
-    test_ttlim = {"Flt1003": [[60243.00, 64586.00]]}
+    test_ttlim = {"Flt1004": [[52256.06, 52862.14]]}
 
     # features
     all_features = ['utm_x', 'utm_y', 'utm_z', 'msl', 'lat', 'lon', 'baro', 'dem', 'mag_2_uc', 'mag_3_uc', 'mag_4_uc', 'mag_5_uc',
