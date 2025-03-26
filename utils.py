@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import scipy
 from scipy.signal import butter, filtfilt
 from Math import *
+from sklearn.metrics import mean_squared_error
 
 
 def get_ind(xyz, line=None, ind=None, lines=(), tt_lim=(), splits=(1,)):
@@ -275,7 +276,7 @@ def plot(tt, mag, detrend_data=False, detrend_type="linear"):
     plt.show()
 
 
-def plot_model_vs_real(time_range, model_output, real_values, model_type, mag_error, is_save=True):
+def plot_model_vs_real(time_range, model_output, real_values, model_name, std, rmse, is_save=True):
     assert model_output.shape == real_values.shape, "模型输出和真实值的维度必须相同"
 
     start_time, end_time = time_range
@@ -288,12 +289,12 @@ def plot_model_vs_real(time_range, model_output, real_values, model_type, mag_er
     plt.xticks(rotation=45)
     plt.xlabel('Time')
     plt.ylabel('Value')
-    plt.title('MagError:{:.2f}nT'.format(mag_error))
+    plt.title('STD:{:.2f}nT; RMSE:{:.2f}nT'.format(std, rmse))
     plt.legend()
     plt.grid(True, linestyle='--', alpha=0.6)
     plt.tight_layout()
     if is_save:
-        plt.savefig("./results/{}.png".format(model_type))
+        plt.savefig("./results/{}.png".format(model_name))
     plt.show()
 
 
@@ -311,22 +312,18 @@ def z_score_normalize(array):
     return normalized
 
 
-def inverse_transform(scaled_data, scaler):
-    return scaled_data * scaler.scale_ + scaler.mean_
-
-
-def calculate_error(mag_comp, mag_true, detrend_type="linear"):
-    mag_comp = detrend(mag_comp, type=detrend_type)
-    mag_true = detrend(mag_true, type=detrend_type)
-    return np.round(np.mean(abs(mag_comp - mag_true)), decimals=2)
-
-
-def compute_std_delta_mag(mag_output, mag_1_c):  # Standard deviation of magnetic signal error
-    errors = mag_output - mag_1_c
+def compute_std_dev(B_pred, B_real):  # Standard deviation of magnetic signal error
+    errors = B_pred - B_real
     mu_delta_mag = np.mean(errors)
     sigma_delta_mag = np.sqrt(np.mean((errors - mu_delta_mag) ** 2))
     sigma_delta_mag = round(sigma_delta_mag, 2)
     return sigma_delta_mag
+
+
+def compute_rmse(B_pred, B_real):
+    error = sqrt(mean_squared_error(B_pred, B_real))
+    error = round(error, 2)
+    return error
 
 
 def compute_improvement_ratio(sigma_uc, sigma_c):  # Improvement Ratio

@@ -51,66 +51,28 @@ class MagCompDataset(Dataset):
         self.config = data.config
         self.is_pca = self.config.is_pca
 
-        self.std_input = StandardScaler()
-        self.std_output = StandardScaler()
-        self.std_Btotal = StandardScaler()
+        self.std_x = StandardScaler()
+        self.std_y = StandardScaler()
+        self.std_A = StandardScaler()
+        self.std_beta = StandardScaler()
+        self.std_Btl = StandardScaler()
+
         self.x = None
         self.y = None
-        self.mag4uc = None
-        self.mag1c = None
         self.A = np.empty((0, 18))
-        self.beta_TL = np.zeros((18,))
+        self.beta_TL = None
+        self.Btl = None  # mag_4_c - mag_1_c
+        self.mag4uc = None
+        self.mag5c = None
+        self.mag1c = None
         self.length = None
 
         self.create_TL_params()
         self.data_processing()
 
-        # if self.mode == 'train':
-        #     self.B_total = self.calculate_Btotal('Flt1003')
         if self.is_pca:
             pca = PCA(n_components=0.99)
             self.x = torch.tensor(pca.fit_transform(self.x), dtype=torch.float32)
-
-    def data_processing(self):
-        arrays_x = [[] for _ in range(len(self.features))]
-        arrays_y = []
-        arrays_mag4 = []
-        arrays_mag1 = []
-        for flight, xyz in self.xyzs.items():
-            if self.mode == 'train':
-                ind = self.train_inds[flight]
-            else:
-                ind = self.test_inds[flight]
-            sub_diurnal = xyz['diurnal'][ind]
-            sub_igrf = xyz['igrf'][ind]
-
-            for i, key in enumerate(self.features):
-                value = xyz[key][ind]
-                if key in ['mag_4_uc', 'mag_5_uc', 'flux_d_x', 'flux_d_y', 'flux_d_z']:
-                    arrays_x[i].extend(value - sub_diurnal - sub_igrf)
-                elif key in ['cur_com_1', 'cur_strb', 'cur_outpwr', 'cur_ac_lo']:
-                    lpf_sig = bpf_data(value, bpf=self.lpf)
-                    arrays_x[i].extend(lpf_sig)
-                else:
-                    arrays_x[i].extend(value)
-
-            arrays_y.extend(xyz['mag_4_uc'][ind] - xyz['mag_1_c'][ind])
-            arrays_mag4.extend(xyz['mag_4_uc'][ind])
-            arrays_mag1.extend(xyz['mag_1_c'][ind])
-
-        for i in range(len(self.features)):
-            arrays_x[i] = self.std_input.fit_transform(np.array(arrays_x[i]).reshape(-1, 1))
-        arrays_x = np.array(arrays_x).reshape(-1, len(self.features))
-        arrays_y = np.array(arrays_y)
-        self.mag4uc = np.array(arrays_mag4)
-        self.mag1c = np.array(arrays_mag1)
-
-        self.x = torch.tensor(arrays_x, dtype=torch.float32)
-        self.y = torch.tensor(arrays_y, dtype=torch.float32)
-        self.length = self.y.shape[0]
-
-    def get_std_output(self):
-        return self.std_output
 
     def create_TL_params(self):
         TL_d_4 = np.zeros((18,))
@@ -131,25 +93,100 @@ class MagCompDataset(Dataset):
                                      lambd=lambd, terms=terms_A)  # coefficients with Flux D & Mag 4
         self.beta_TL = TL_d_4 / len(self.config.train_ttlim)
 
+        arrays_Btl, arrays_mag5c = np.empty((0, 1)), np.empty((0, 1))
         for flight, xyz in self.xyzs.items():
-            if self.mode == 'train':
-                ind = self.train_inds[flight]
-            else:
-                ind = self.test_inds[flight]
+            ind = self.train_inds[flight] if self.mode == 'train' else self.test_inds[flight]
 
             use_vec = "flux_d"  # selected vector (flux) magnetometer
             Bx = xyz.get(use_vec + '_x')  # load Flux D data
             By = xyz.get(use_vec + '_y')
             Bz = xyz.get(use_vec + '_z')
             Bt = xyz.get(use_vec + '_t')
+            A = create_TL_A(Bx[ind], By[ind], Bz[ind], Bt=Bt[ind])  # Tolles-Lawson A matrix for Flux D
 
-            self.A = np.vstack((self.A, create_TL_A(Bx[ind], By[ind], Bz[ind], Bt=Bt[ind])))  # Tolles-Lawson A matrix for Flux D
+            Btl_values = (xyz['mag_4_uc'][ind] - np.dot(A, self.beta_TL) - xyz['mag_1_c'][ind]).reshape(-1, 1)
+            arrays_Btl = np.vstack((arrays_Btl, Btl_values))
+            mag5c_values = (xyz['mag_5_uc'][ind] - np.dot(A, self.beta_TL)).reshape(-1, 1)
+            arrays_mag5c = np.vstack((arrays_mag5c, mag5c_values))
+
+            self.A = np.vstack((self.A, A))
+
+        self.A = torch.tensor(self.std_A.fit_transform(self.A), dtype=torch.float32)
+        self.beta_TL = torch.tensor(self.std_beta.fit_transform(self.beta_TL.reshape(1, -1)), dtype=torch.float32)
+        self.Btl = torch.tensor(self.std_Btl.fit_transform(arrays_Btl), dtype=torch.float32)
+        self.mag5c = arrays_mag5c
+
+    def data_processing(self):
+        arrays_x, arrays_y = [], []
+        arrays_mag4uc, arrays_mag1c = [], []
+        for flight, xyz in self.xyzs.items():
+            ind = self.train_inds[flight] if self.mode == 'train' else self.test_inds[flight]
+            sub_diurnal = xyz['diurnal'][ind]
+            sub_igrf = xyz['igrf'][ind]
+
+            feature_data = []
+            for key in self.features:
+                value = xyz[key][ind]
+                if key in ['mag_4_uc', 'mag_5_uc', 'flux_d_x', 'flux_d_y', 'flux_d_z']:
+                    processed_data = value - sub_diurnal - sub_igrf
+                elif key in ['cur_com_1', 'cur_strb', 'cur_outpwr', 'cur_ac_lo']:
+                    processed_data = bpf_data(value, bpf=self.lpf)
+                else:
+                    processed_data = value
+                feature_data.append(processed_data.reshape(-1, 1))
+
+            feature_matrix = np.hstack(feature_data)
+            arrays_x.append(feature_matrix)
+            arrays_y.append(xyz['mag_4_uc'][ind] - xyz['mag_1_c'][ind])
+            arrays_mag4uc.append(xyz['mag_4_uc'][ind])
+            arrays_mag1c.append(xyz['mag_1_c'][ind])
+
+        arrays_x = np.vstack(arrays_x)
+        arrays_y = np.vstack(arrays_y).reshape(-1, 1)
+        arrays_mag4uc = np.vstack(arrays_mag4uc).reshape(-1, 1)
+        arrays_mag1c = np.vstack(arrays_mag1c).reshape(-1, 1)
+
+        extra_features = np.hstack([self.mag5c.reshape(-1, 1)])
+        arrays_x = np.hstack([arrays_x, extra_features])
+
+        arrays_x = self.std_x.fit_transform(arrays_x)
+        arrays_y = self.std_y.fit_transform(arrays_y)
+
+        self.x = torch.tensor(arrays_x, dtype=torch.float32)
+        self.y = torch.tensor(arrays_y, dtype=torch.float32)
+        self.mag4uc = torch.tensor(arrays_mag4uc, dtype=torch.float32)
+        self.mag1c = torch.tensor(arrays_mag1c, dtype=torch.float32)
+        self.length = self.y.shape[0]
 
     def __getitem__(self, idx):
-        return self.x[idx], self.y[idx], self.A[idx], self.mag4uc[idx], self.mag1c[idx]
+        return self.x[idx], self.y[idx], self.mag4uc[idx], self.mag1c[idx], self.A[idx], self.Btl[idx]
 
     def __len__(self):
         return self.length
+
+    def get_std_x(self):
+        return self.std_x
+
+    def get_std_y(self):
+        return self.std_y
+
+    def get_std_A(self):
+        return self.std_A
+
+    def get_std_beta(self):
+        return self.std_beta
+
+
+class SequentialDataset(MagCompDataset):
+    def __init__(self, data, mode):
+        super().__init__(data, mode)
+        self.x = self.x.unfold(0, self.config.seq_len, 1)
+        self.y = self.y[self.config.seq_len - 1:]
+        self.A = self.A[self.config.seq_len - 1:]
+        self.mag1c = self.mag1c[self.config.seq_len - 1:]
+        self.mag4uc = self.mag4uc[self.config.seq_len - 1:]
+        self.Btl = self.Btl[self.config.seq_len - 1:]
+        self.length = self.length - self.config.seq_len + 1
 
 
 def read_check(xyz, field, N, silent=False):
