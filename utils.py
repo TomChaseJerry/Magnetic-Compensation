@@ -276,25 +276,51 @@ def plot(tt, mag, detrend_data=False, detrend_type="linear"):
     plt.show()
 
 
-def plot_model_vs_real(time_range, model_output, real_values, model_name, std, rmse, is_save=True):
+def plot_model_vs_real(time_range, model_output, real_values, result_name, std, rmse, is_save=True):
     assert model_output.shape == real_values.shape, "模型输出和真实值的维度必须相同"
 
     start_time, end_time = time_range
     timestamps = np.linspace(0, 1, len(model_output))
     time_series = [start_time + (end_time - start_time) * t for t in timestamps]
 
-    plt.figure(figsize=(10, 5))
-    plt.plot(time_series, model_output, label='Model Output', color='blue')
-    plt.plot(time_series, real_values, label='Real Values', color='red')
+    plt.figure(figsize=(12, 6))
+    plt.plot(time_series, model_output,
+             label='Model Output',
+             color='blue',
+             linewidth=2.5,
+             linestyle='-',
+             alpha=0.8)
+    plt.plot(time_series, real_values,
+             label='Real Values',
+             color='red',
+             linewidth=1.5,
+             linestyle='--',
+             alpha=0.9)
+
     plt.xticks(rotation=45)
-    plt.xlabel('Time')
-    plt.ylabel('Value')
-    plt.title('STD:{:.2f}nT; RMSE:{:.2f}nT'.format(std, rmse))
-    plt.legend()
-    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.xlabel('Time', fontsize=12)
+    plt.ylabel('Value', fontsize=12)
+    plt.title('STD:{:.2f}nT; RMSE:{:.2f}nT'.format(std, rmse), fontsize=14, pad=20)
+
+    legend = plt.legend(fontsize=12,
+                        framealpha=1,
+                        edgecolor='black',
+                        loc='upper right')
+
+    # 设置网格和背景
+    plt.grid(True, linestyle=':', alpha=0.5)
+    plt.gca().set_facecolor('#f5f5f5')  # 浅灰色背景
+
+    # 调整边框
+    for spine in plt.gca().spines.values():
+        spine.set_visible(True)
+        spine.set_edgecolor('gray')
+        spine.set_linewidth(0.5)
+
     plt.tight_layout()
+
     if is_save:
-        plt.savefig("./results/{}.png".format(model_name))
+        plt.savefig("./results/{}.png".format(result_name), dpi=300, bbox_inches='tight')
     plt.show()
 
 
@@ -310,6 +336,10 @@ def z_score_normalize(array):
     std = np.std(array)
     normalized = (array - mean) / std
     return normalized
+
+
+def inverse_transform(data, std):
+    return data * std[1] + std[0]
 
 
 def compute_std_dev(B_pred, B_real):  # Standard deviation of magnetic signal error
