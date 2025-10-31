@@ -1,82 +1,8 @@
 import matplotlib.pyplot as plt
 import scipy
-from scipy.signal import butter, filtfilt
+from scipy.signal import butter, sosfiltfilt
 from Math import *
 from sklearn.metrics import mean_squared_error
-
-
-def get_ind(xyz, line=None, ind=None, lines=(), tt_lim=(), splits=(1,)):
-    """
-        get_ind(tt::Vector, line::Vector;
-                ind    = trues(length(tt)),
-                lines  = (),
-                tt_lim = (),
-                splits = (1))
-
-    Get BitVector of indices for further analysis from specified indices (subset),
-    lines, and/or time range. Any or all of these may be used. Defaults to use all
-    indices, lines, and times.
-
-    **Arguments:**
-    - `tt`:     time [s]
-    - `line`:   line number(s)
-    - `ind`:    (optional) selected data indices
-    - `lines`:  (optional) selected line number(s)
-    - `tt_lim`: (optional) end time limit or length-`2` start & end time limits (inclusive) [s]
-    - `splits`: (optional) data splits, must sum to 1
-
-    **Returns:**
-    - `ind`: BitVector (or tuple of BitVector) of selected data indices
-    """
-
-    line = xyz.get('line')
-    tt = xyz['tt']
-    N = len(tt)
-    if ind is None:
-        ind = np.ones(N, dtype=bool)
-
-    assert np.isclose(sum(splits), 1), f"sum of splits = {sum(splits)} ≠ 1"
-    assert len(tt_lim) <= 2, f"length of tt_lim = {len(tt_lim)} > 2"
-    assert len(splits) <= 3, f"number of splits = {len(splits)} > 3"
-
-    if isinstance(ind, np.ndarray) and ind.dtype == bool:
-        ind_ = ind.copy()
-    elif ind is not None:
-        ind_ = np.isin(np.arange(N), ind)
-    else:
-        ind_ = np.ones(N, dtype=bool)
-
-    if len(lines) > 0:
-        ind = np.zeros(N, dtype=bool)
-        for l in lines:
-            ind |= (line == l)
-    else:
-        ind = np.ones(N, dtype=bool)
-
-    if len(tt_lim) == 1:
-        ind &= (tt <= min(tt_lim))
-    elif len(tt_lim) == 2:
-        ind &= (tt >= min(tt_lim)) & (tt <= max(tt_lim))
-
-    ind &= ind_
-
-    if np.sum(ind) == 0:
-        print("ind contains all falses")
-
-    if len(splits) == 1:
-        return ind
-    elif len(splits) == 2:
-        split1_end = round(np.sum(ind) * splits[0])
-        ind1 = ind & (np.cumsum(ind) <= split1_end)
-        ind2 = ind & ~ind1
-        return ind1, ind2
-    elif len(splits) == 3:
-        split1_end = round(np.sum(ind) * splits[0])
-        split2_end = round(np.sum(ind) * (splits[0] + splits[1]))
-        ind1 = ind & (np.cumsum(ind) <= split1_end)
-        ind2 = ind & (np.cumsum(ind) <= split2_end) & ~ind1
-        ind3 = ind & ~(ind1 | ind2)
-        return ind1, ind2, ind3
 
 
 def get_bpf(pass1=0.1, pass2=0.9, fs=10.0, pole=4):
@@ -114,11 +40,11 @@ def get_bpf(pass1=0.1, pass2=0.9, fs=10.0, pole=4):
         raise ValueError(f"{pass1} and {pass2} passband frequencies are invalid")
 
     # Design Butterworth filter
-    b, a = butter(pole, cutoff, btype=btype)
-    return b, a
+    sos = butter(pole, cutoff, btype=btype, output='sos')
+    return sos
 
 
-def bpf_data(x, bpf=None):
+def bpf_data(x, sos):
     """
         bpf_data(x::AbstractMatrix; bpf=get_bpf())
 
@@ -131,18 +57,15 @@ def bpf_data(x, bpf=None):
     **Returns:**
     - `x_f`: data matrix, filtered
     """
-
-    if bpf is None:
-        bpf = get_bpf()  # Use the default bandpass filter if none is provided
-
     x_f = np.copy(x)  # Create a deep copy of the input matrix
     if x.ndim == 1:
         if np.std(x) > np.finfo(x.dtype).eps:  # Check if std deviation is greater than machine epsilon
-            x_f = filtfilt(bpf[0], bpf[1], x)  # Apply the bandpass filter
+            x_f = sosfiltfilt(sos, x, padlen=3 * max(1, len(sos) * 10), padtype='odd')  # Apply the bandpass filter
     elif x.ndim > 1:
         for i in range(x.shape[1]):  # Iterate over columns
             if np.std(x[:, i]) > np.finfo(x.dtype).eps:  # Check if std deviation is greater than machine epsilon
-                x_f[:, i] = filtfilt(bpf[0], bpf[1], x[:, i])  # Apply the bandpass filter
+                x_f[:, i] = sosfiltfilt(sos, x[:, i], padlen=3 * max(1, len(sos) * 10),
+                                        padtype='odd')  # Apply the bandpass filter
     else:
         print("bpf_data: input's ndim cant be zero.")
 
@@ -151,114 +74,6 @@ def bpf_data(x, bpf=None):
 
 def detrend(x, type="linear"):  # type{linear/constant}
     return scipy.signal.detrend(x, type=type)
-
-
-def plot_mag(
-        xyz,
-        use_mags,
-        ind=None,
-        detrend_data=False,
-        vec_terms=False,
-        ylim=None,
-        dpi=150,
-        save_plot=False,
-        plot_png="scalar_mags.png"
-):
-    """
-    plot_mag(xyz::XYZ;
-             ind                       = trues(xyz.traj.N),
-             detrend_data::Bool        = false,
-             use_mags::Vector{Symbol}  = [:all_mags],
-             vec_terms::Vector{Symbol} = [:all],
-             ylim::Tuple               = (),
-             dpi::Int                  = 200,
-             show_plot::Bool           = true,
-             save_plot::Bool           = false,
-             plot_png::String          = "scalar_mags.png")
-
-    Plot scalar or vector (fluxgate) magnetometer data from a given flight test.
-
-    **Arguments:**
-    - `xyz`:          `XYZ` flight data struct
-    - `ind`:          (optional) selected data indices
-    - `detrend_data`: (optional) if true, detrend plot data
-    - `use_mags`:     (optional) scalar or vector (fluxgate) magnetometers to plot {`:all_mags`, `:comp_mags` or `:mag_1_c`, `:mag_1_uc`, `:flux_a`, etc.}
-        - `:all_mags`  = all provided scalar magnetometer fields (e.g., `:mag_1_c`, `:mag_1_uc`, etc.)
-        - `:comp_mags` = provided compensation(s) between `:mag_1_uc` & `:mag_1_c`, etc.
-    - `vec_terms`:    (optional) vector magnetometer (fluxgate) terms to plot {`:all` or `:x`,`:y`,`:z`,`:t`}
-    - `ylim`:         (optional) length-`2` plot `y` limits (`ymin`,`ymax`) [nT]
-    - `dpi`:          (optional) dots per inch (image resolution)
-    - `show_plot`:    (optional) if true, show `p1`
-    - `save_plot`:    (optional) if true, save `p1` as `plot_png`
-    - `plot_png`:     (optional) plot file name to save (`.png` extension optional)
-
-    **Returns:**
-    - `p1`: plot of scalar or vector (fluxgate) magnetometer data
-    """
-
-    if ind is None:
-        ind = np.ones(xyz['N'], dtype=bool)
-
-    tt = (xyz['tt'][ind] - xyz['tt'][ind][0]) / 60
-    xlab = "time [min]"
-
-    fields = xyz.keys()
-    list_c = [f"mag_{i}_c" for i in range(1, 6 + 1)]
-    list_uc = [f"mag_{i}_uc" for i in range(1, 6 + 1)]
-    mags_c = [field for field in list_c if field in fields]
-    mags_uc = [field for field in list_uc if field in fields]
-    mags_all = mags_c + mags_uc
-
-    ylab = ""
-    plt.figure(dpi=dpi)
-
-    if ylim:
-        plt.ylim(ylim)
-    plt.xlabel(xlab)
-    plt.ylabel(ylab)
-
-    if "comp_mags" in use_mags:
-        ylab = "magnetic field error [nT]"
-        plt.ylabel(ylab)
-        for i, mag_c in enumerate(mags_c):
-            mag_uc = mags_uc[i]
-            val = getattr(xyz, mag_uc)[ind] - getattr(xyz, mag_c)[ind]
-            if detrend_data:
-                val = detrend(val)
-            plt.plot(tt, val, label=f"mag_{i + 1} comp")
-            print(f"==== mag_{i + 1} comp ====")
-            print(f"avg comp = {round(np.mean(val), 3)} nT")
-            print(f"std dev  = {round(np.std(val), 3)} nT")
-    elif vec_terms:
-        vec = ["_x", "_y", "_z", "_t"]
-        ylab = "magnetic field [nT]"
-        if detrend_data:
-            ylab = f"detrended {ylab}"
-        plt.ylabel(ylab)
-
-        for use_mag in use_mags:
-            for vec_term in vec:
-                val = xyz.get(use_mag + vec_term)[ind]
-                if detrend_data:
-                    val = detrend(val)
-                plt.plot(tt, val, label=f"{use_mag} {vec_term}")
-    else:
-        ylab = "magnetic field [nT]"
-        if detrend_data:
-            ylab = f"detrended {ylab}"
-        plt.ylabel(ylab)
-
-        for mag in use_mags:
-            val = xyz.get(mag)[ind]
-            if detrend_data:
-                val = detrend(val)
-            plt.plot(tt, val, label=mag)
-
-    plt.legend()
-    if save_plot:
-        plt.savefig(plot_png)
-
-    return plt
 
 
 def plot(tt, mag, detrend_data=False, detrend_type="linear"):
@@ -276,42 +91,41 @@ def plot(tt, mag, detrend_data=False, detrend_type="linear"):
     plt.show()
 
 
-def plot_model_vs_real(time_range, model_output, real_values, result_name, std, rmse, is_save=True):
-    assert model_output.shape == real_values.shape, "模型输出和真实值的维度必须相同"
+def plot_comparison(sig1, sig2, name, is_save=True):
+    '''
+    **Arguments:**
+    - name:   sig names eg:"[1007, filter, filter - T-L]"
+    '''
+    assert sig1.shape[0] == sig2.shape[0], "The dimensions of the data1 and the data2 must be the same"
 
-    start_time, end_time = time_range
-    timestamps = np.linspace(0, 1, len(model_output))
-    time_series = [start_time + (end_time - start_time) * t for t in timestamps]
+    fs = 10
+    N = len(sig1)
+    t = np.arange(N) / fs
 
     plt.figure(figsize=(12, 6))
-    plt.plot(time_series, model_output,
-             label='Model Output',
+    plt.plot(t, sig1,
+             label=name[1],
              color='blue',
-             linewidth=2.5,
-             linestyle='-',
-             alpha=0.8)
-    plt.plot(time_series, real_values,
-             label='Real Values',
-             color='red',
-             linewidth=1.5,
+             linewidth=1,
              linestyle='--',
+             alpha=0.8)
+    plt.plot(t, sig2,
+             label=name[2],
+             color='red',
+             linewidth=1,
+             linestyle='-',
              alpha=0.9)
 
     plt.xticks(rotation=45)
-    plt.xlabel('Time', fontsize=12)
-    plt.ylabel('Value', fontsize=12)
-    plt.title('STD:{:.2f}nT; RMSE:{:.2f}nT'.format(std, rmse), fontsize=14, pad=20)
+    plt.xlabel('Time [s]', fontsize=12)
+    plt.ylabel('带通内磁场值 [nT]', fontsize=12)
 
-    legend = plt.legend(fontsize=12,
-                        framealpha=1,
-                        edgecolor='black',
-                        loc='upper right')
-
-    # 设置网格和背景
+    plt.legend(fontsize=12, framealpha=1, edgecolor='black', loc='upper right')
+    plt.rcParams['font.sans-serif'] = ['SimHei']
+    plt.rcParams['axes.unicode_minus'] = False
     plt.grid(True, linestyle=':', alpha=0.5)
-    plt.gca().set_facecolor('#f5f5f5')  # 浅灰色背景
+    plt.gca().set_facecolor('#f5f5f5')
 
-    # 调整边框
     for spine in plt.gca().spines.values():
         spine.set_visible(True)
         spine.set_edgecolor('gray')
@@ -320,7 +134,7 @@ def plot_model_vs_real(time_range, model_output, real_values, result_name, std, 
     plt.tight_layout()
 
     if is_save:
-        plt.savefig("./results/{}.png".format(result_name), dpi=300, bbox_inches='tight')
+        plt.savefig("./results/{}.png".format(name[0] + '_' + name[1] + '&' + name[2]), dpi=300, bbox_inches='tight')
     plt.show()
 
 
@@ -336,10 +150,6 @@ def z_score_normalize(array):
     std = np.std(array)
     normalized = (array - mean) / std
     return normalized
-
-
-def inverse_transform(data, std):
-    return data * std[1] + std[0]
 
 
 def compute_std_dev(B_pred, B_real):  # Standard deviation of magnetic signal error

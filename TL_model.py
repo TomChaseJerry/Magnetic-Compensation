@@ -166,12 +166,10 @@ def create_TL_coef(Bx, By, Bz, Bt, B, lambd=0.0, terms=("permanent", "induced", 
     """
 
     # Create filter
-    perform_filter = ((0 < pass1 < fs / 2) or (0 < pass2 < fs / 2))
+    # perform_filter = ((0 < pass1 < fs / 2) or (0 < pass2 < fs / 2))
+    perform_filter = False
     if perform_filter:
         bpf = get_bpf(pass1=pass1, pass2=pass2, fs=fs, pole=pole)
-    else:
-        print("Not filtering (or trimming) Tolles-Lawson data.")
-        bpf = None
 
     # Create Tolles-Lawson `A` matrix
     A = create_TL_A(Bx, By, Bz, Bt=Bt, terms=terms, Bt_scale=Bt_scale)

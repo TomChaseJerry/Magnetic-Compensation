@@ -15,17 +15,6 @@ class config(object):
     flights_21 = ["Flt2001", "Flt2002", "Flt2004", "Flt2005", "Flt2006", "Flt2007", "Flt2008", "Flt2015", "Flt2016", "Flt2017"]
     flight_nums = [2, 3, 4, 6, 7]
 
-    # test_lines = {"Flt1002": ['1002.17'], "Flt1003": ['1003.08'], "Flt1004": ['4012.00', '4001.00'],
-    #               "Flt1005": ['4004.00', '4003.00', '4002.00'], "Flt1006": ['1006.08'], "Flt1007": ['1007.06']}
-    # train_ttlim = {"Flt1002": [[57489.00, 59946.00], [61360.00, 63035.00]],
-    #                "Flt1003": [[59926.00, 60105.00], [50713.00, 54497.00]],
-    #                "Flt1004": [[45175.33, 52862.14]],
-    #                "Flt1005": [[48085.00, 51848.30]],
-    #                "Flt1006": [[49000.00, 53286.00], [53855.00, 54510.00]],
-    #                "Flt1007": [[48024.00, 51880.00]]}
-    # test_ttlim = {"Flt1002": [[63935.00, 65812.00]], "Flt1003": [[60243.00, 64586.00]], "Flt1004": [[54518.19, 55891.29]],
-    #               "Flt1005": [[53471.63, 55605.59]], "Flt1006": [[55770.00, 56609.00]], "Flt1007": [[57770.00, 63010.00]]}
-
     # features
     all_sensors = ['mag_2_uc', 'mag_3_uc', 'mag_4_uc', 'mag_5_uc', 'cur_com_1', 'cur_ac_hi', 'cur_ac_lo', 'cur_tank', 'cur_flap',
                    'cur_strb', 'cur_srvo_o', 'cur_srvo_m', 'cur_srvo_i', 'cur_heat', 'cur_acpwr', 'cur_outpwr', 'cur_bat_1',
@@ -38,10 +27,10 @@ class config(object):
 
     # run
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    batch_size = 256
+    batch_size = 64
     lr = 1e-3
     weight_decay = 1e-3
-    epochs = 50
+    epochs = 10
     is_pca = False
     model_type = 'CNN'  # ['MLP', 'CNN', 'Transformer']
     is_PINNs = False
