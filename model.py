@@ -2,68 +2,64 @@ import torch.nn
 import torch.nn as nn
 
 
-class MLP(nn.Module):
-    def __init__(self, input_dim):
-        super(MLP, self).__init__()
-        self.nn = nn.Sequential(
-            nn.Linear(input_dim, 256),
-            nn.BatchNorm1d(256),
-            nn.LeakyReLU(0.1),
-            nn.Linear(256, 128),
-            nn.Dropout(0.2),
-            nn.BatchNorm1d(128),
-            nn.LeakyReLU(0.1),
-            nn.Linear(128, 64),
-            nn.BatchNorm1d(64),
-            nn.LeakyReLU(0.1),
-            nn.Linear(64, 1)
+class CNN1D(nn.Module):
+    def __init__(self, in_dim, window_size):
+        super(CNN1D, self).__init__()
+        # ---- C1 ----
+        self.conv1 = nn.Conv1d(
+            in_channels=in_dim, out_channels=128,
+            kernel_size=17, stride=1, padding="same"
         )
-        self._init_weights()
+        self.act1 = nn.LeakyReLU(0.1)
+        self.pool1 = nn.MaxPool1d(kernel_size=4, stride=4)
 
-    def _init_weights(self):
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='leaky_relu')
+        # ---- C2 ----
+        self.conv2 = nn.Conv1d(
+            in_channels=128, out_channels=256,
+            kernel_size=7, stride=1, padding="same"
+        )
+        self.act2 = nn.LeakyReLU(0.1)
+        self.pool2 = nn.MaxPool1d(kernel_size=4, stride=4)
+
+        # ---- C3 ----
+        self.conv3 = nn.Conv1d(
+            in_channels=256, out_channels=512,
+            kernel_size=7, stride=1, padding="same"
+        )
+        self.act3 = nn.LeakyReLU(0.1)
+        self.pool3 = nn.MaxPool1d(kernel_size=4, stride=4)
+
+        with torch.no_grad():
+            dummy = torch.zeros(1, in_dim, window_size)
+            out = self.pool3(self.act3(self.conv3(
+                self.pool2(self.act2(self.conv2(
+                    self.pool1(self.act1(self.conv1(dummy)))
+                )))
+            )))
+        final_len = out.shape[-1]
+
+        # ---- Fully Connected ----
+        self.fc1 = nn.Linear(512 * final_len, 512)
+        self.fc2 = nn.Linear(512, 256)
+        self.fc3 = nn.Linear(256, 1)
+
+        self.act_fc = nn.LeakyReLU(0.1)
+        self.act_out = nn.Tanh()
 
     def forward(self, x):
-        y_hat = self.nn(x)
-        return y_hat
+        # C1
+        x = self.pool1(self.act1(self.conv1(x)))
+        # C2
+        x = self.pool2(self.act2(self.conv2(x)))
+        # C3
+        x = self.pool3(self.act3(self.conv3(x)))
 
+        # flatten
+        x = x.view(x.size(0), -1)
 
-class CNN(nn.Module):
-    def __init__(self, input_dim, seq_len, conv_layer=[16, 32], fc_layer=[64, 32]):
-        super(CNN, self).__init__()
-        self.cnn = torch.nn.Sequential(
-            torch.nn.Conv1d(in_channels=input_dim,
-                            out_channels=conv_layer[0],
-                            kernel_size=3,
-                            stride=1,
-                            padding=1,
-                            padding_mode='zeros'),
-            torch.nn.ReLU(),
-            torch.nn.MaxPool1d(kernel_size=2, stride=2),
-            torch.nn.Conv1d(in_channels=conv_layer[0],
-                            out_channels=conv_layer[1],
-                            kernel_size=3,
-                            stride=1,
-                            padding=1,
-                            padding_mode='zeros'),
-            torch.nn.ReLU(),
-            torch.nn.MaxPool1d(kernel_size=2, stride=2),
-        )
+        # FC layers
+        x = self.act_fc(self.fc1(x))
+        x = self.act_fc(self.fc2(x))
+        x = self.act_out(self.fc3(x))
 
-        self.flatten = nn.Flatten()
-
-        self.fc = torch.nn.Sequential(
-            torch.nn.Linear(int((seq_len / 2 ** len(conv_layer)) * conv_layer[-1]), fc_layer[0]),
-            torch.nn.ReLU(),
-            torch.nn.Linear(fc_layer[0], fc_layer[1]),
-            torch.nn.ReLU(),
-            torch.nn.Linear(fc_layer[1], 1)
-        )
-
-    def forward(self, x):
-        x = self.cnn(x)
-        x = self.flatten(x)
-        x = self.fc(x)
         return x

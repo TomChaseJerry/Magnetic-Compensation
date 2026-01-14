@@ -1,11 +1,21 @@
 import matplotlib.pyplot as plt
-import scipy
-from scipy.signal import butter, sosfiltfilt
-from Math import *
-from sklearn.metrics import mean_squared_error
+from matplotlib import font_manager
+from scipy.signal import butter, filtfilt
+import numpy as np
+import random
+import torch
+import os
 
 
-def get_bpf(pass1=0.1, pass2=0.9, fs=10.0, pole=4):
+def set_seed(seed=2026):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.benchmark = True
+
+
+def get_bpf(pass1=0.2, pass2=0.8, fs=10.0, pole=4):
     """
     get_bpf(; pass1 = 0.1, pass2 = 0.9, fs = 10.0, pole::Int = 4)
 
@@ -40,11 +50,11 @@ def get_bpf(pass1=0.1, pass2=0.9, fs=10.0, pole=4):
         raise ValueError(f"{pass1} and {pass2} passband frequencies are invalid")
 
     # Design Butterworth filter
-    sos = butter(pole, cutoff, btype=btype, output='sos')
-    return sos
+    b, a = butter(pole, cutoff, btype=btype)
+    return b, a
 
 
-def bpf_data(x, sos):
+def apply_bpf(x, bpf):
     """
         bpf_data(x::AbstractMatrix; bpf=get_bpf())
 
@@ -57,72 +67,117 @@ def bpf_data(x, sos):
     **Returns:**
     - `x_f`: data matrix, filtered
     """
+
     x_f = np.copy(x)  # Create a deep copy of the input matrix
     if x.ndim == 1:
         if np.std(x) > np.finfo(x.dtype).eps:  # Check if std deviation is greater than machine epsilon
-            x_f = sosfiltfilt(sos, x, padlen=3 * max(1, len(sos) * 10), padtype='odd')  # Apply the bandpass filter
+            x_f = filtfilt(bpf[0], bpf[1], x)  # Apply the bandpass filter
     elif x.ndim > 1:
         for i in range(x.shape[1]):  # Iterate over columns
             if np.std(x[:, i]) > np.finfo(x.dtype).eps:  # Check if std deviation is greater than machine epsilon
-                x_f[:, i] = sosfiltfilt(sos, x[:, i], padlen=3 * max(1, len(sos) * 10),
-                                        padtype='odd')  # Apply the bandpass filter
+                x_f[:, i] = filtfilt(bpf[0], bpf[1], x[:, i])  # Apply the bandpass filter
     else:
         print("bpf_data: input's ndim cant be zero.")
 
     return x_f
 
 
-def detrend(x, type="linear"):  # type{linear/constant}
-    return scipy.signal.detrend(x, type=type)
+def inverse_from_11(x, scaler):
+    if hasattr(scaler, "inverse_transform"):
+        return scaler.inverse_transform(x)
+    if isinstance(scaler, dict) and "min" in scaler and "max" in scaler:
+        xmin = scaler["min"]
+        xmax = scaler["max"]
+        denom = xmax - xmin
+        if np.isscalar(denom) or getattr(denom, "ndim", 0) == 0:
+            if denom == 0:
+                denom = 1.0
+        else:
+            denom = np.where(denom == 0, 1.0, denom)
+        return (x + 1) * 0.5 * denom + xmin
+    raise TypeError("Unsupported scaler type for inverse transform.")
 
 
-def plot(tt, mag, detrend_data=False, detrend_type="linear"):
-    start_time = tt[0]
-    end_time = tt[1]
-    timestamps = np.linspace(0, 1, len(mag))
-    time_series = [start_time + (end_time - start_time) * t for t in timestamps]
-
-    plt.figure()
-    plt.xlabel("time")
-    plt.ylabel("magnetic field [nT]")
-    if detrend_data:
-        mag = detrend(mag, type=detrend_type)
-    plt.plot(time_series, mag)
-    plt.show()
+def mean_squared_error_np(y_true, y_pred):
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+    if y_true.shape != y_pred.shape:
+        raise ValueError("y_true and y_pred must have the same shape.")
+    diff = y_true - y_pred
+    return np.mean(diff * diff)
 
 
-def plot_comparison(sig1, sig2, name, is_save=True):
-    '''
-    **Arguments:**
-    - name:   sig names eg:"[1007, filter, filter - T-L]"
-    '''
-    assert sig1.shape[0] == sig2.shape[0], "The dimensions of the data1 and the data2 must be the same"
+def plot_signals(sigs, names=None, is_save=False, fs=10):
+    """
+    通用多曲线绘图函数
 
-    fs = 10
-    N = len(sig1)
+    Parameters
+    ----------
+    sigs : list of np.ndarray
+        信号列表，例如 [sig1, sig2, sig3, ...]，每个 shape = (N,) 或 (N,1)
+    names : list of str 或 None
+        每条曲线的名称，如 ["raw", "filter", "compensated"]
+        若为 None，则自动命名为 signal_0, signal_1, ...
+    is_save : bool
+        是否保存图片
+    fs : float
+        采样频率，用于时间轴
+    """
+    assert isinstance(sigs, (list, tuple)) and len(sigs) > 0, "sigs 必须是非空列表/元组"
+
+    # 全部拉平成一维，并检查长度一致
+    proc_sigs = []
+    for i, s in enumerate(sigs):
+        s = np.asarray(s).reshape(-1)
+        proc_sigs.append(s)
+        if i == 0:
+            N = len(s)
+        else:
+            assert len(s) == N, "所有信号长度必须一致"
+
+    # 处理名字
+    if names is None:
+        names = [f"signal_{i}" for i in range(len(proc_sigs))]
+    else:
+        assert len(names) == len(proc_sigs), "names 长度必须与 sigs 相同"
+
+    # 时间轴
     t = np.arange(N) / fs
 
     plt.figure(figsize=(12, 6))
-    plt.plot(t, sig1,
-             label=name[1],
-             color='blue',
-             linewidth=1,
-             linestyle='--',
-             alpha=0.8)
-    plt.plot(t, sig2,
-             label=name[2],
-             color='red',
-             linewidth=1,
-             linestyle='-',
-             alpha=0.9)
+
+    font_candidates = [
+        "Microsoft YaHei",
+        "SimHei",
+        "Noto Sans CJK SC",
+        "PingFang SC",
+        "WenQuanYi Zen Hei",
+        "Arial Unicode MS",
+    ]
+    for font_name in font_candidates:
+        try:
+            font_path = font_manager.findfont(font_name, fallback_to_default=False)
+        except Exception:
+            font_path = None
+        if font_path:
+            plt.rcParams["font.family"] = font_name
+            break
+
+    # 使用默认颜色循环
+    for s, name in zip(proc_sigs, names):
+        plt.plot(
+            t, s,
+            label=name,
+            linewidth=1,
+            linestyle='-',
+            alpha=0.9
+        )
 
     plt.xticks(rotation=45)
     plt.xlabel('Time [s]', fontsize=12)
-    plt.ylabel('带通内磁场值 [nT]', fontsize=12)
+    plt.ylabel('Band-pass magnetic field [nT]', fontsize=12)
 
     plt.legend(fontsize=12, framealpha=1, edgecolor='black', loc='upper right')
-    plt.rcParams['font.sans-serif'] = ['SimHei']
-    plt.rcParams['axes.unicode_minus'] = False
     plt.grid(True, linestyle=':', alpha=0.5)
     plt.gca().set_facecolor('#f5f5f5')
 
@@ -134,42 +189,26 @@ def plot_comparison(sig1, sig2, name, is_save=True):
     plt.tight_layout()
 
     if is_save:
-        plt.savefig("./results/{}.png".format(name[0] + '_' + name[1] + '&' + name[2]), dpi=300, bbox_inches='tight')
+        fname = "_".join(names)
+        plt.savefig(f"./results/{fname}.png", dpi=300, bbox_inches='tight')
+
     plt.show()
 
 
-def min_max_normalize(array):
-    min_val = np.min(array)
-    max_val = np.max(array)
-    normalized = (array - min_val) / (max_val - min_val)
-    return normalized
+def plot_loss_curve(epochs, train_losses, model_path):
+    plt.figure(figsize=(10, 6))
 
+    plt.plot(epochs, train_losses, 'b-', label='Training Loss', linewidth=2)
 
-def z_score_normalize(array):
-    mean = np.mean(array)
-    std = np.std(array)
-    normalized = (array - mean) / std
-    return normalized
+    plt.xlabel('Epoch', fontsize=12)
+    plt.ylabel('Loss', fontsize=12)
+    plt.title('Training Loss Curve', fontsize=14)  # 英文标题
+    plt.legend(fontsize=12)
+    plt.grid(True, alpha=0.3)
+    plt.yscale('log')
 
-
-def compute_std_dev(B_pred, B_real):  # Standard deviation of magnetic signal error
-    errors = B_pred - B_real
-    mu_delta_mag = np.mean(errors)
-    sigma_delta_mag = np.sqrt(np.mean((errors - mu_delta_mag) ** 2))
-    sigma_delta_mag = round(sigma_delta_mag, 2)
-    return sigma_delta_mag
-
-
-def compute_rmse(B_pred, B_real):
-    error = sqrt(mean_squared_error(B_pred, B_real))
-    error = round(error, 2)
-    return error
-
-
-def compute_improvement_ratio(sigma_uc, sigma_c):  # Improvement Ratio
-
-    return sigma_uc / sigma_c
-
-
-def compute_snr(sigma_magtruth, sigma_delta_mag):  # SNR, Signal-to-Noise Ratio
-    return sigma_magtruth / sigma_delta_mag
+    base = os.path.splitext(os.path.basename(model_path))[0]
+    loss_plot_path = "./results/analysis/" + base + "_loss.png"
+    plt.savefig(loss_plot_path, dpi=300, bbox_inches='tight')
+    print(f"Loss curve saved to: {loss_plot_path}")
+    plt.close()

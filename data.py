@@ -3,229 +3,171 @@ import numpy as np
 import h5py
 from pyproj import Transformer
 import torch
-import joblib
-
-from TL_model import create_TL_coef, create_TL_A
-from torch.utils.data import Dataset
-from sklearn.preprocessing import StandardScaler, MinMaxScaler
-from utils import get_bpf, bpf_data, plot_comparison, detrend
+from TLmodel import caculate_coef, get_tl_data, build_A
+from utils import get_bpf, plot_signals, apply_bpf
 
 
-class AeroMagneticCompensationDataset(Dataset):
+class AeroMagneticCompensationDataset:
     def __init__(self, args):
         self.args = args
-        self.flights = dict()
+        self.flights = []
         self.features = self.args.sensors
-        self.bpf = get_bpf(pass1=0.1, pass2=0.9, fs=10.0, pole=4)
+        self.bpf = get_bpf(0.2, 0.8)
 
         self.read()
-        if self.args.test == '1007':
-            self.train_lines = self.flights[2].line.unique().tolist() + self.flights[3].line.unique().tolist() + self.flights[
-                4].line.unique().tolist() + self.flights[6].line.unique().tolist()
-            self.test_lines = self.flights[7].line.unique().tolist()
-        else:
-            self.train_lines = self.flights[2].line.unique().tolist() + self.flights[4].line.unique().tolist() + self.flights[
-                6].line.unique().tolist() + self.flights[7].line.unique().tolist()
-            self.test_lines = self.flights[3].line.unique().tolist()
-
-        self.lines = self.train_lines if self.args.mode == 'train' else self.test_lines
-
-        self.y_scaler = StandardScaler()
         self.apply_TL()
-        self.data_processing()
+        # self.precompute_data = self._precompute_data()
 
     def read(self):
-        for flight_num in self.args.flights:
-            data_path = self.args.path
-            df = pd.read_hdf(data_path, key="Flt100{}".format(flight_num))
-            # apply bpf
-            df['mag_3_bpf'] = bpf_data(df['mag_3_uc'], self.bpf)
-            df['mag_4_bpf'] = bpf_data(df['mag_4_uc'], self.bpf)
-            df['mag_5_bpf'] = bpf_data(df['mag_5_uc'], self.bpf)
-            df['mag_1_bpf'] = bpf_data(df['mag_1_c'], self.bpf)
-            # plot_comparison(df['mag_4_bpf'], detrend(df['mag_4_uc']), [str(flight_num), 'mag4bpf', 'mag4uc'])
-            self.flights[flight_num] = df
+        file_path = getattr(self.args, "path", None)
+        if not file_path or not str(file_path).lower().endswith(".txt"):
+            file_path = "data/data.txt"
+        df_raw = pd.read_csv(file_path, sep=r"\s+", header=None, engine="python")
+
+        df = pd.DataFrame({
+            'time': df_raw.iloc[:, 4],
+            'flux_b_x': df_raw.iloc[:, 10],
+            'flux_b_y': df_raw.iloc[:, 11],
+            'flux_b_z': df_raw.iloc[:, 12],
+            'mag_1_uc': df_raw.iloc[:, 15],
+            'line': df_raw.iloc[:, 16],
+        })
+
+        df = df.set_index('time', drop=True)
+
+        cali_window = getattr(self.args, "cali", None)
+        smooth_window = getattr(self.args, "smoo", None)
+
+        def slice_window(source_df, window):
+            start, end = window
+            return source_df.loc[start:end].copy()
+
+        self.cali = slice_window(df, cali_window)
+        self.smoo = slice_window(df, smooth_window)
+        self.flights = [self.cali, self.smoo]
 
     def apply_TL(self):
-        mask_tl = (self.flights[2].line == 1002.20)
-        tl_data = self.flights[2][mask_tl]
-        lambd = 0.025  # ridge parameter for ridge regression
-        terms_A = ["permanent", "induced", "eddy"]  # Tolles-Lawson terms to use
-        self.beta_tl_3 = create_TL_coef(tl_data['flux_b_x'], tl_data['flux_b_y'], tl_data['flux_b_z'], tl_data['flux_b_t'],
-                                        tl_data['mag_3_bpf'], lambd=lambd, terms=terms_A)
-        self.beta_tl_4 = create_TL_coef(tl_data['flux_b_x'], tl_data['flux_b_y'], tl_data['flux_b_z'], tl_data['flux_b_t'],
-                                        tl_data['mag_4_bpf'], lambd=lambd, terms=terms_A)
-        self.beta_tl_5 = create_TL_coef(tl_data['flux_b_x'], tl_data['flux_b_y'], tl_data['flux_b_z'], tl_data['flux_b_t'],
-                                        tl_data['mag_5_bpf'], lambd=lambd, terms=terms_A)
+        tl_data = self.cali.copy()
 
-        for flight_num, temp_df in self.flights.items():
-            A = create_TL_A(temp_df['flux_b_x'], temp_df['flux_b_y'], temp_df['flux_b_z'], temp_df['flux_b_t'])
-            temp_df['mag_3_c'] = temp_df['mag_3_bpf'].values - np.dot(A, self.beta_tl_3)
-            temp_df['mag_4_c'] = temp_df['mag_4_bpf'].values - np.dot(A, self.beta_tl_4)
-            temp_df['mag_5_c'] = temp_df['mag_5_bpf'].values - np.dot(A, self.beta_tl_5)
-            self.flights[flight_num] = temp_df
+        lambd = self.args.lambd
+        A_tl, B_1_tl = get_tl_data(tl_data, self.bpf)
+        self.beta = caculate_coef(B_1_tl, A_tl, lambd)
 
-    def data_processing(self):
-        x = pd.DataFrame()
-        for flight_num in self.args.flights:
-            # select features
-            df = self.flights[flight_num]
-            df = df[self.features]
+        for df in self.flights:
+            df['mag_1_bpf'] = apply_bpf(df['mag_1_uc'].values, self.bpf)
+            B_vector = np.vstack([df['flux_b_x'].values, df['flux_b_y'].values, df['flux_b_z'].values]).T
+            A_raw = build_A(B_vector, df['mag_1_uc'])
+            A_f = apply_bpf(A_raw, self.bpf)
+            df['mag_1_tl'] = df['mag_1_bpf'] - np.dot(A_f, self.beta)
+            column_names = [f'A{i}' for i in range(1, 19)]
+            df[column_names] = A_f
 
-            # concat
-            x = pd.concat([x, df], ignore_index=True, axis=0)
+            plot_signals([df['mag_1_tl'].values, df['mag_1_bpf'].values], ['mag_1_tl', 'mag_1_bpf'])
+            std_raw = np.std(df['mag_1_bpf'].values, ddof=1)
+            std_tl = np.std(df['mag_1_tl'].values, ddof=1)
+            print("STD raw:{}; STD tl:{}; IR:{}".format(std_raw, std_tl, std_raw / std_tl))
 
-        x = x.loc[x.line.isin(self.lines)]
-
-        scaler = StandardScaler()
-        y = x.loc[:, 'mag_1_bpf']
-        x = x.drop(columns=['line', 'mag_1_bpf'])
-        self.x = torch.tensor(scaler.fit_transform(x.to_numpy()), dtype=torch.float32)
-        if self.args.mode == 'train':
-            self.y = torch.tensor(self.y_scaler.fit_transform(y.to_numpy().reshape(-1, 1)), dtype=torch.float32)
-            self.length = self.y.size()[0]
-            joblib.dump(self.y_scaler, '{}/y_scaler_{}.pkl'.format('./results/logs/', self.args.test))
+    def _scale_to_11(self, x, scaler=None):
+        x = np.asarray(x, dtype=np.float32)
+        if scaler is None:
+            xmin = np.min(x, axis=0)
+            xmax = np.max(x, axis=0)
+            denom = xmax - xmin
+            if np.isscalar(denom) or getattr(denom, "ndim", 0) == 0:
+                if denom == 0:
+                    denom = 1.0
+            else:
+                denom = np.where(denom == 0, 1.0, denom)
+            x_scaled = 2 * (x - xmin) / denom - 1
+            scaler = {"min": xmin, "max": xmax}
+            return x_scaled, scaler
+        xmin = scaler["min"]
+        xmax = scaler["max"]
+        denom = xmax - xmin
+        if np.isscalar(denom) or getattr(denom, "ndim", 0) == 0:
+            if denom == 0:
+                denom = 1.0
         else:
-            self.y = y.to_numpy().reshape(-1, 1)
-            self.length = self.y.shape[0]
+            denom = np.where(denom == 0, 1.0, denom)
+        x_scaled = 2 * (x - xmin) / denom - 1
+        return x_scaled
 
-    def get_scaler_params(self):
-        return self.y_scaler
+    def build_custom_dataset(self):
+        window_size = self.args.win
+        df = self.cali
+        if df.empty:
+            raise ValueError("No calibration data found to build dataset.")
 
-    def __getitem__(self, idx):
-        return self.x[idx], self.y[idx]
+        x_cols = ["mag_1_bpf"] + [f"A{i}" for i in range(1, 19)]
+        missing = [c for c in x_cols + ["mag_1_tl"] if c not in df.columns]
+        if missing:
+            raise ValueError("Missing columns: {}".format(missing))
 
-    def __len__(self):
-        return self.length
+        x = df[x_cols].values.astype(np.float32)
+        y = df["mag_1_tl"].values.astype(np.float32)
 
+        x_scaled, self.x_scaler = self._scale_to_11(x)
+        y_scaled, self.y_scaler = self._scale_to_11(y)
+        if len(x) < window_size:
+            raise ValueError("Not enough samples for window_size.")
 
-class SequentialDataset(AeroMagneticCompensationDataset):
-    def __init__(self, args):
-        super().__init__(args)
-        self.x = self.x.unfold(0, self.args.win, 1)
-        self.y = self.y[self.args.win - 1:]
-        self.length = self.length - self.args.win + 1
+        x_seq = []
+        y_seq = []
+        for i in range(len(x_scaled) - window_size + 1):
+            x_seq.append(x_scaled[i:i + window_size].T)
+            y_seq.append(y_scaled[i + window_size - 1])
 
+        x_tensor = torch.tensor(np.stack(x_seq), dtype=torch.float32)
+        y_tensor = torch.tensor(np.array(y_seq).reshape(-1, 1), dtype=torch.float32)
 
-def read_check(data, silent=False):
-    """
-        Internal helper function to check for NaNs or missing data (returned as NaNs) in opened HDF5 file.
-    Prints out warning for any field that contains NaNs.
+        split_idx = int(len(x_tensor) * 0.8)
+        train_dataset = torch.utils.data.TensorDataset(x_tensor[:split_idx], y_tensor[:split_idx])
+        val_dataset = torch.utils.data.TensorDataset(x_tensor[split_idx:], y_tensor[split_idx:])
+        return train_dataset, val_dataset
 
-    **Arguments:**
-        - `data`:    opened HDF5 file
-        - `silent`: (optional) if true, no print outs
+    def build_test_dataset(self):
+        window_size = self.args.win
+        df = self.smoo
+        if df.empty:
+            raise ValueError("No smooth data found to build test dataset.")
 
-    **Returns:**
-        - `val`: data returned for `field`
-    """
+        x_cols = ["mag_1_bpf"] + [f"A{i}" for i in range(1, 19)]
+        missing = [c for c in x_cols + ["mag_1_tl"] if c not in df.columns]
+        if missing:
+            raise ValueError("Missing columns: {}".format(missing))
 
-    for feature in data.keys():
-        val = np.array(data[feature])  # Read the data
-        if not silent and np.isnan(val).any():
-            print("{} field contains NaNs".format(feature))
+        x = df[x_cols].values.astype(np.float32)
+        y = df["mag_1_tl"].values.astype(np.float32)
 
+        if len(x) < window_size:
+            raise ValueError("Not enough samples for window_size.")
 
-def euler2dcm(roll, pitch, yaw, order="body2nav"):
-    """
-        euler2dcm(roll, pitch, yaw, order::Symbol = :body2nav)
+        x_scaled, self.x_scaler = self._scale_to_11(x)
+        y_scaled, self.y_scaler = self._scale_to_11(y)
+        x_seq = []
+        y_seq = []
+        for i in range(len(x_scaled) - window_size + 1):
+            x_seq.append(x_scaled[i:i + window_size].T)
+            y_seq.append(y_scaled[i + window_size - 1])
 
-    Converts a (Euler) roll-pitch-yaw (`X`-`Y`-`Z`) right-handed body to navigation
-    frame rotation (or the opposite rotation), to a DCM (direction cosine matrix).
-    Yaw is synonymous with azimuth and heading here.
-    If frame 1 is rotated to frame 2, then the returned DCM, when pre-multiplied,
-    rotates a vector in frame 1 into frame 2. There are 2 use cases:
-
-    1) With `order = :body2nav`, the body frame is rotated in the standard
-    -roll, -pitch, -yaw sequence to the navigation frame. For example, if v1 is
-    a 3x1 vector in the body frame [nose, right wing, down], then that vector
-    rotated into the navigation frame [north, east, down] would be v2 = dcm * v1.
-
-    2) With `order = :nav2body`, the navigation frame is rotated in the standard
-    yaw, pitch, roll sequence to the body frame. For example, if v1 is a 3x1
-    vector in the navigation frame [north, east, down], then that vector rotated
-    into the body frame [nose, right wing, down] would be v2 = dcm * v1.
-
-    Reference: Titterton & Weston, Strapdown Inertial Navigation Technology, 2004,
-    Section 3.6 (pg. 36-41 & 537).
-
-    **Arguments:**
-    - `roll`:  length-`N` roll  angle [rad], right-handed rotation about x-axis
-    - `pitch`: length-`N` pitch angle [rad], right-handed rotation about y-axis
-    - `yaw`:   length-`N` yaw   angle [rad], right-handed rotation about z-axis
-    - `order`: (optional) rotation order {`:body2nav`,`:nav2body`}
-
-    **Returns:**
-    - `dcm`: `3` x `3` x `N` direction cosine matrix [-]
-    """
-    r = np.array(roll)
-    p = np.array(pitch)
-    y = np.array(yaw)
-
-    cr = np.cos(r)
-    sr = np.sin(r)
-    cp = np.cos(p)
-    sp = np.sin(p)
-    cy = np.cos(y)
-    sy = np.sin(y)
-
-    dcm = np.zeros((3, 3, len(roll)))
-
-    if order == "body2nav":
-        dcm[0, 0, :] = cp * cy
-        dcm[0, 1, :] = -cr * sy + sr * sp * cy
-        dcm[0, 2, :] = sr * sy + cr * sp * cy
-        dcm[1, 0, :] = cp * sy
-        dcm[1, 1, :] = cr * cy + sr * sp * sy
-        dcm[1, 2, :] = -sr * cy + cr * sp * sy
-        dcm[2, 0, :] = -sp
-        dcm[2, 1, :] = sr * cp
-        dcm[2, 2, :] = cr * cp
-    else:
-        raise ValueError(f"DCM rotation {order} order not defined")
-    if len(roll) == 1:
-        return dcm[:, :, 0]
-    else:
-        return dcm
+        x_tensor = torch.tensor(np.stack(x_seq), dtype=torch.float32)
+        y_tensor = torch.tensor(np.array(y_seq).reshape(-1, 1), dtype=torch.float32)
+        return torch.utils.data.TensorDataset(x_tensor, y_tensor)
 
 
-def read_flight_data(flight_nums, verbose=False):
-    """
-        Read h5 flight data and convert it to a pandas dataframe
+def create_txt():
+    df = pd.read_hdf('data/Flt_data.h5', key="Flt1002")
+    used_sensors = ['tt', 'mag_1_uc', 'flux_b_x', 'flux_b_y', 'flux_b_z', 'line']
+    df = df[used_sensors]
+    df = df[df['line'].isin([1002.02, 1002.20])]
 
-        Arguments:
-        - `flight_number` : number of the flight we want to convert to a dataframe
-        - `verbose` : print keys with NaNs and infos
+    n_rows = len(df)
+    out = np.zeros((n_rows, 17), dtype=float)
+    out[:, 4] = df['tt'].to_numpy()
+    out[:, 10] = df['flux_b_x'].to_numpy()
+    out[:, 11] = df['flux_b_y'].to_numpy()
+    out[:, 12] = df['flux_b_z'].to_numpy()
+    out[:, 15] = df['mag_1_uc'].to_numpy()
+    out[:, 16] = df['line'].to_numpy()
 
-        Returns:
-        - `df` : pandas dataframe containing data from the flight
-    """
-    for flight_num in flight_nums:
-        file_path = "datasets/data/Flt100{}_train.h5".format(flight_num)
-        h5 = h5py.File(file_path, 'r')
-
-        df = pd.DataFrame()
-        for key in h5.keys():
-            data = h5[key]
-            if data.shape != ():
-                df[key] = data[:]
-                if df[key].isnull().any() & verbose:
-                    print("{} contains NaNs".format(key))
-
-        datafields = pd.read_csv("datasets/fields_sgl_2020.csv", header=None).iloc[:, 0].tolist()
-        df = df.reindex(columns=datafields)
-        df = df.sort_values(by=['tt'])
-        df.index = df['tt']
-        df.index.name = 'Time (s)'
-
-        WGS_to_UTC = Transformer.from_crs(crs_from=4326,  # EPSG:4326 World Geodetic System 1984, https://epsg.io/4326
-                                          crs_to=32618)  # EPSG:32618 WGS 84/UTM zone 18N, https://epsg.io/32618
-
-        # Transfom (LAT, LONG) -> (X_UTM, Y_UTM)
-        UTM_X_pyproj, UTM_Y_pyproj = WGS_to_UTC.transform(df.lat.values,
-                                                          df.lon.values)
-
-        print("Check if the converted coordinates and the dataset coordinates are equal (+/- 1.4cm) : ",
-              all(np.sqrt((df.utm_x - UTM_X_pyproj) ** 2 + (df.utm_y - UTM_Y_pyproj) ** 2) < 0.014))
-
-        df.to_hdf("./datasets/data/processed/Flt_data.h5", key="Flt100{}".format(flight_num))
+    np.savetxt('data/data.txt', out, fmt="%.2f")

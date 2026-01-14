@@ -1,66 +1,65 @@
-from config import config
-from data import AeroMagneticCompensationDataset, SequentialDataset
-import argparse
-import numpy as np
-from TL_model import create_TL_coef, create_TL_A
-from utils import detrend, plot_comparison, compute_std_dev, compute_rmse
 import torch
+import numpy as np
+import argparse
+from data import AeroMagneticCompensationDataset
+from model import CNN1D
 from torch.utils.data import DataLoader
-import joblib
-
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+from utils import plot_signals, set_seed, mean_squared_error_np, inverse_from_11
 
 
-def predict(args, is_save=True):
-    print("=" * 50)
-    print("Start testing...\n")
-
-    model_path = "results/models/{}.pt".format(args.model)
-    y_scaler_path = "results/logs/y_scaler_{}.pkl".format(args.test)
-
-    if args.model == 'CNN':
-        dataset_test = SequentialDataset(args)
-
-    print("test num:", dataset_test.__len__())
-    dataloader_test = DataLoader(dataset=dataset_test, batch_size=args.batch, shuffle=False, num_workers=0)
-
-    model = torch.load(model_path, weights_only=False)
-    y_scaler = joblib.load(y_scaler_path)
+def predict_model(model, test_loader):
     model.eval()
-    B_preds, B_reals = np.empty((0, 1)), np.empty((0, 1))
+    y_true_all = []
+    y_pred_all = []
+    bpf_all = []
     with torch.no_grad():
-        for data in dataloader_test:
-            x, y = data
-            x = x.to(device)
+        for batch in test_loader:
+            x, y = batch
+            x, y = x.to(device), y.to(device)
+            y_pred = model(x)
 
-            y_hat = model(x)
+            y_true_all.append(y.cpu().numpy())
+            y_pred_all.append(y_pred.cpu().numpy())
+            bpf_all.append(x[:, 0, -1].cpu().numpy().reshape(-1, 1))
 
-            B_pred = np.array(y_scaler.inverse_transform(y_hat.cpu()))
-            B_preds = np.vstack((B_preds, B_pred))
-            B_reals = np.vstack((B_reals, y))
+    y_true_all = np.concatenate(y_true_all, axis=0)
+    y_pred_all = np.concatenate(y_pred_all, axis=0)
+    bpf_all = np.concatenate(bpf_all, axis=0)
+    y_true_denorm = inverse_from_11(y_true_all, y_scaler)
+    y_pred_denorm = inverse_from_11(y_pred_all, y_scaler)
+    if isinstance(x_scaler, dict) and "min" in x_scaler and "max" in x_scaler:
+        bpf_scaler = {
+            "min": np.asarray([x_scaler["min"][0]]),
+            "max": np.asarray([x_scaler["max"][0]]),
+        }
+        bpf_denorm = inverse_from_11(bpf_all, bpf_scaler)
+    else:
+        bpf_denorm = bpf_all
+    std_raw = np.std(bpf_denorm, ddof=1)
+    std_tl = np.std(y_true_denorm, ddof=1)
+    std_model = np.std(y_true_denorm - y_pred_denorm, ddof=1)
+    print("STD raw:{}; STD tl:{}; IR:{}".format(std_raw, std_tl, std_raw / std_tl))
+    print("STD raw:{}; STD tl+ourmodel:{}; IR:{}".format(std_raw, std_model, std_raw / std_model))
+    plot_signals([bpf_denorm, y_true_denorm, y_true_denorm - y_pred_denorm], ['bpf', 'tl', 'tl+ourmodel'])
 
-        std = compute_std_dev(B_preds, B_reals)
-        rmse = compute_rmse(B_preds, B_reals)
-        print("===Test===   STD:{}nT; RMSE:{}nT".format(std, rmse))
-
-    before = np.array(dataset_test.flights[7]['mag_4_bpf'])
-    plot_comparison(before[1000:10000], B_preds[1000:10000], ['7', '补偿前磁场值', '补偿后磁场值'])
 
 def get_parser():
+    used_sensors = ['time', 'mag_1_uc', 'flux_b_x', 'flux_b_y', 'flux_b_z', 'line']
+
     parser = argparse.ArgumentParser(description="航磁补偿")
-    parser.add_argument("-flights", type=list, default=[2, 3, 4, 6, 7], help="flights to select")
-    parser.add_argument("-path", type=str, default="./datasets/data/processed/Flt_data.h5", help="data path")
-    parser.add_argument("-sensors", type=list,
-                        default=['mag_3_c', 'mag_4_c', 'mag_5_c', 'vol_bat_1', 'vol_bat_2', 'ins_vn', 'ins_vw', 'ins_vu',
-                                 'cur_heat',
-                                 'cur_flap', 'cur_ac_lo', 'cur_tank', 'ins_pitch', 'ins_roll', 'ins_yaw', 'baro', 'line',
-                                 'mag_1_bpf'],
-                        help="sensors to select")
-    parser.add_argument("-batch", type=int, default=128, help="batch_size")
-    parser.add_argument("-model", type=str, default='CNN', help="model")
-    parser.add_argument("-test", type=str, default='1007', help="[1007, 1003]")
-    parser.add_argument("-mode", type=str, default='test', help="[train, test]")
-    parser.add_argument("-win", type=int, default=20, help="sliding window‘s length if 1DCNN")
+    parser.add_argument("-path", type=str, default="./data/data.txt", help="data path")
+    parser.add_argument("-sensors", type=list, default=used_sensors, help="sensors to select")
+    parser.add_argument("-batch", type=int, default=64, help="batch_size")
+    parser.add_argument("-lr", type=int, default=1e-4, help="learning rate")
+    parser.add_argument("-wd", type=int, default=1e-3, help="weight_decay")
+    parser.add_argument("-epochs", type=int, default=100, help="training epochs")
+    parser.add_argument("-model", type=str, default='1DCNN', help="model")
+    parser.add_argument("-win", type=int, default=64, help="sliding window‘s length if 1DCNN")
+    parser.add_argument("-lambd", type=int, default=0.025, help="ridge parameter for ridge regression")
+    parser.add_argument("-save", type=str, default='./results/models/1DCNN.pt', help="model save path")
+    parser.add_argument("-seed", type=int, default=2026, help="random seed")
+    parser.add_argument("-cali", type=list, default=[46370.00, 47600.00], help="calibration window")
+    parser.add_argument("-smoo", type=list, default=[66560.00, 67850.00], help="smooth window")
 
     return parser
 
@@ -69,4 +68,14 @@ if __name__ == '__main__':
     parser = get_parser()
     args = parser.parse_args()
 
-    predict(args)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    set_seed(args.seed)
+
+    custom_dataset = AeroMagneticCompensationDataset(args)
+    testdataset = custom_dataset.build_test_dataset()
+    test_loader = DataLoader(testdataset, batch_size=args.batch, shuffle=False)
+    y_scaler = custom_dataset.y_scaler
+    x_scaler = custom_dataset.x_scaler
+    model = CNN1D(in_dim=19, window_size=args.win).to(device)
+    model.load_state_dict(torch.load(args.save))
+    predict_model(model, test_loader)
